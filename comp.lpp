@@ -1,0 +1,182 @@
+%option noyywrap
+%option c++
+%{
+#include <iostream>
+#include <string>
+#include <map>
+#include <fstream> 
+
+using namespace std;
+
+map<string, string> symbolTable;
+
+void add_to_symbol_table(const string& token, const string& lexeme) {
+    if (symbolTable.find(lexeme) == symbolTable.end()) {
+        symbolTable[lexeme] = token;
+    }
+}
+%}
+
+DIGIT       [0-9]
+ID          [a-zA-Z_][a-zA-Z0-9_]*
+WS          [ \t]+
+NEWLINE     (\r\n|\r|\n)
+
+%%
+"main"      { add_to_symbol_table("MAIN", yytext); }
+"int"       { add_to_symbol_table("INT", yytext); }
+"char"      { add_to_symbol_table("CHAR", yytext); }
+"long"      { add_to_symbol_table("LONG", yytext); }
+"float"     { add_to_symbol_table("FLOAT", yytext); }
+"double"    { add_to_symbol_table("DOUBLE", yytext); }
+"bool"      { add_to_symbol_table("BOOL", yytext); }
+"if"        { add_to_symbol_table("IF", yytext); }
+"else"      { add_to_symbol_table("ELSE", yytext); }
+"for"       { add_to_symbol_table("FOR", yytext); }
+"while"     { add_to_symbol_table("WHILE", yytext); }
+"do"        { add_to_symbol_table("DO", yytext); }
+"break"     { add_to_symbol_table("BREAK", yytext); }
+"continue"  { add_to_symbol_table("CONTINUE", yytext); }
+"goto"      { add_to_symbol_table("GOTO", yytext); }
+"switch"    { add_to_symbol_table("SWITCH", yytext); }
+"case"      { add_to_symbol_table("CASE", yytext); }
+"default"   { add_to_symbol_table("DEFAULT", yytext); }
+"return"    { add_to_symbol_table("RETURN", yytext); }
+"void"      { add_to_symbol_table("VOID", yytext); }
+"typedef"   { add_to_symbol_table("TYPEDEF", yytext); }
+"enum"      { add_to_symbol_table("ENUM", yytext); }
+"union"     { add_to_symbol_table("UNION", yytext); }
+"struct"    { add_to_symbol_table("STRUCT", yytext); }
+"static"    { add_to_symbol_table("STATIC", yytext); }
+"true"      { add_to_symbol_table("TRUE", yytext); }
+"false"     { add_to_symbol_table("FALSE", yytext); }
+"nullptr"   { add_to_symbol_table("NULLPTR", yytext); }
+
+"//".*      { add_to_symbol_table("COMMENT", yytext); }
+
+"+="        { add_to_symbol_table("ADD_ASSIGN", yytext); }
+"-="        { add_to_symbol_table("SUB_ASSIGN", yytext); }
+"*="        { add_to_symbol_table("MUL_ASSIGN", yytext); }
+"/="        { add_to_symbol_table("DIV_ASSIGN", yytext); }
+"%="        { add_to_symbol_table("MOD_ASSIGN", yytext); }
+"^="        { add_to_symbol_table("XOR_ASSIGN", yytext); }
+"&="        { add_to_symbol_table("AND_ASSIGN", yytext); }
+"|="        { add_to_symbol_table("OR_ASSIGN", yytext); }
+"<<="       { add_to_symbol_table("LSHIFT_ASSIGN", yytext); }
+">>="       { add_to_symbol_table("RSHIFT_ASSIGN", yytext); }
+"=="        { add_to_symbol_table("EQUAL", yytext); }
+"!="        { add_to_symbol_table("NOT_EQUAL", yytext); }
+"&&"        { add_to_symbol_table("LOG_AND", yytext); }
+"||"        { add_to_symbol_table("LOG_OR", yytext); }
+"->"        { add_to_symbol_table("PTR_OP", yytext); }
+"="         { add_to_symbol_table("ASSIGN", yytext); }
+"<="        { add_to_symbol_table("LESS_EQUAL", yytext); }
+">="        { add_to_symbol_table("GREATER_EQUAL", yytext); }
+">>"        { add_to_symbol_table("RSHIFT_OP", yytext); }
+"<<"        { add_to_symbol_table("LSHIFT_OP", yytext); }
+"<"         { add_to_symbol_table("LESS", yytext); }
+">"         { add_to_symbol_table("GREATER", yytext); }
+"!"         { add_to_symbol_table("LOG_NOT", yytext); }
+"++"        { add_to_symbol_table("INCREMENT", yytext); }
+"--"        { add_to_symbol_table("DECREMENT", yytext); }
+"+"         { add_to_symbol_table("ADD", yytext); }
+"-"         { add_to_symbol_table("SUBTRACT", yytext); }
+"*"         { add_to_symbol_table("STAR", yytext); }
+"/"         { add_to_symbol_table("DIVIDE", yytext); }
+"%"         { add_to_symbol_table("MODULO", yytext); }
+"^"         { add_to_symbol_table("XOR", yytext); }
+"&"         { add_to_symbol_table("AND", yytext); }
+"|"         { add_to_symbol_table("OR", yytext); }
+"~"         { add_to_symbol_table("BITWISE_NOT", yytext); }
+"?"         { add_to_symbol_table("QUESTION", yytext); }
+":"         { add_to_symbol_table("COLON", yytext); }
+
+"("         { add_to_symbol_table("LPARAN", yytext); }
+")"         { add_to_symbol_table("RPARAN", yytext); }
+"{"         { add_to_symbol_table("LCBRACKET", yytext); }
+"}"         { add_to_symbol_table("RCBRACKET", yytext); }
+"["         { add_to_symbol_table("LSQBRACKET", yytext); }
+"]"         { add_to_symbol_table("RSQBRACKET", yytext); }
+";"         { add_to_symbol_table("SEMI_COLON", yytext); }
+","         { add_to_symbol_table("COMMA", yytext); }
+
+(({DIGIT}+"."{DIGIT}*)|("."{DIGIT}+))[fF] {
+    add_to_symbol_table("FLOAT_LITERAL", yytext);
+}
+
+{DIGIT}+[fF] {
+    add_to_symbol_table("FLOAT_LITERAL", yytext);
+}
+
+(({DIGIT}+"."{DIGIT}*)|("."{DIGIT}+)) {
+    add_to_symbol_table("DOUBLE_LITERAL", yytext);
+}
+
+"." {
+    add_to_symbol_table("DOT", yytext); 
+}
+
+{DIGIT}+ {
+    add_to_symbol_table("INT_LITERAL", yytext);
+}
+
+\'([^\\'\n]|\\.)\' {
+    add_to_symbol_table("CHAR_LITERAL", yytext);
+}
+
+\"([^\\\"\n]|\\.)*\" {
+    add_to_symbol_table("STRING_LITERAL", yytext);
+}
+
+{ID} {
+    add_to_symbol_table("IDENTIFIER", yytext);
+}
+
+{WS}        { /* Skip whitespace */ }
+{NEWLINE}   { /* Ignore newlines */ }
+
+.           { add_to_symbol_table("UNKNOWN", yytext); }
+
+%%
+
+class MyLexer : public yyFlexLexer {
+public:
+    using yyFlexLexer::yyFlexLexer; // inherit constructors
+};
+
+int main(int argc, char** argv) {
+    istream* input = &cin;
+    ifstream file;
+
+    if (argc > 1) {
+        file.open(argv[1]);
+        if (!file.is_open()) {
+            cerr << "Failed to open file: " << argv[1] << endl;
+            return 1;
+        }
+        input = &file;
+    }
+
+    MyLexer lexer(input);  // Create lexer instance with input
+    while (lexer.yylex() != 0);  // Run the lexer
+
+    // Write symbol table to file
+    ofstream outputFile("lextable");
+    if (!outputFile.is_open()) {
+        cerr << "Failed to create output file: lextable" << endl;
+        return 1;
+    }
+
+    outputFile << "Symbol Table:\n";
+    outputFile << "------------------------------\n";
+    outputFile << "Token\t\tLexeme\n";
+    outputFile << "------------------------------\n";
+    for (const auto& entry : symbolTable) {
+        outputFile << entry.second << "\t\t" << entry.first << "\n";
+    }
+    
+    outputFile.close();
+    cout << "Symbol table has been written to 'lextable' file." << endl;
+
+    return 0;
+}
