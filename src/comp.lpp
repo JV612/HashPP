@@ -181,9 +181,9 @@ int main(int argc, char* argv[]) {
     }
 
     outputFile << "Symbol Table:\n";
-    outputFile << "------------------------------\n";
-    outputFile << left << setw(20) << "Lexeme" << setw(20) << "Token" << "\n";
-    outputFile << "------------------------------\n";
+    outputFile << "--------------------------------------------------\n";
+    outputFile << left << setw(20) << "Lexeme" << "\t\t" << setw(20) << "Token" << "\n";
+    outputFile << "--------------------------------------------------\n";
     for (const auto& entry : symbolTable) {
         outputFile << left << setw(20) << entry.first << "\t\t" << setw(20) << entry.second << "\n";
     }
