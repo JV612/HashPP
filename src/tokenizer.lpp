@@ -142,7 +142,8 @@ ESCAPE      \\[abfnrtv\\'\\"]
 
 %%
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[]) 
+{
     if (argc != 2) {
         cerr << "Usage: " << argv[0] << " <input_file>\n";
         return 1;
@@ -154,31 +155,28 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    yyin = file;  // Set flex input to read from the file
-    yylex();      // Start lexical analysis
-    fclose(file); // Close the file
-
-    // Create result directory if it doesn't exist
+    yyin = file;  
+    yylex();      
+    fclose(file); 
+    
     system("mkdir -p results");
 
-    // Extract input filename without path
     string inputPath = argv[1];
     size_t lastSlash = inputPath.find_last_of("/\\");
     string inputFileName = (lastSlash == string::npos) ? inputPath : inputPath.substr(lastSlash + 1);
 
-    // Remove .c or .cpp extension from inputFileName if present
+
     string baseFileName = inputFileName;
 
-    // Find last dot
+
     size_t dotPos = baseFileName.rfind('.');
     if (dotPos != string::npos) {
-        string ext = baseFileName.substr(dotPos); // get extension
+        string ext = baseFileName.substr(dotPos);
         if (ext == ".c" || ext == ".cpp") {
             baseFileName = baseFileName.substr(0, dotPos);
         }
     }
 
-    // Construct output file path
     string outputFilePath = "results/table_" + baseFileName + ".txt";
 
     ofstream outputFile(outputFilePath);
@@ -196,13 +194,11 @@ int main(int argc, char* argv[]) {
 
     outputFile << "Symbol Table:\n";
     outputFile << string(lexemeColumnWidth + 20, '-') << "\n";
-    outputFile << left << setw(lexemeColumnWidth) << "Lexeme" 
-            << setw(20) << "Token" << "\n";
+    outputFile << left << setw(lexemeColumnWidth) << "Lexeme" << setw(20) << "Token" << "\n";
     outputFile << string(lexemeColumnWidth + 20, '-') << "\n";
 
     for (const auto& entry : symbolTable) {
-        outputFile << left << setw(lexemeColumnWidth) << entry.first
-                << setw(20) << entry.second << "\n";
+        outputFile << left << setw(lexemeColumnWidth) << entry.first << setw(20) << entry.second << "\n";
     }
 
     outputFile.close();
