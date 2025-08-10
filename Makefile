@@ -1,5 +1,5 @@
 all: lexer
 
-lexer: ./src/comp.lpp
-	flex ./src/comp.lpp
+lexer: ./src/tokenizer.lpp
+	flex ./src/tokenizer.lpp
 	g++ lex.yy.c -o lexer 
