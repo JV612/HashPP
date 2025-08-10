@@ -1,7 +1,7 @@
 %option noyywrap
-%option c++
 %{
 #include <iostream>
+#include <iomanip>
 #include <string>
 #include <map>
 #include <fstream> 
@@ -141,29 +141,23 @@ NEWLINE     (\r\n|\r|\n)
 
 %%
 
-class MyLexer : public yyFlexLexer {
-public:
-    using yyFlexLexer::yyFlexLexer; // inherit constructors
-};
-
-int main(int argc, char** argv) {
-    istream* input = &cin;
-    ifstream file;
-
-    if (argc > 1) {
-        file.open(argv[1]);
-        if (!file.is_open()) {
-            cerr << "Failed to open file: " << argv[1] << endl;
-            return 1;
-        }
-        input = &file;
+int main(int argc, char* argv[]) {
+    if (argc != 2) {
+        cerr << "Usage: " << argv[0] << " <input_file>\n";
+        return 1;
     }
 
-    MyLexer lexer(input);  // Create lexer instance with input
-    while (lexer.yylex() != 0);  // Run the lexer
+    FILE* file = fopen(argv[1], "r");
+    if (!file) {
+        cerr << "Error: Cannot open file " << argv[1] << "\n";
+        return 1;
+    }
 
-    // Write symbol table to file
-    ofstream outputFile("lextable");
+    yyin = file;  // Set flex input to read from the file
+    yylex();      // Start lexical analysis
+    fclose(file); // Close the file
+
+    ofstream outputFile("symbol_table.txt");
     if (!outputFile.is_open()) {
         cerr << "Failed to create output file: lextable" << endl;
         return 1;
@@ -171,14 +165,14 @@ int main(int argc, char** argv) {
 
     outputFile << "Symbol Table:\n";
     outputFile << "------------------------------\n";
-    outputFile << "Token\t\tLexeme\n";
+    outputFile << left << setw(20) << "Token" << setw(20) << "Lexeme" << "\n";
     outputFile << "------------------------------\n";
     for (const auto& entry : symbolTable) {
-        outputFile << entry.second << "\t\t" << entry.first << "\n";
+        outputFile << left << setw(20) << entry.second << setw(20) << entry.first << "\n";
     }
     
     outputFile.close();
-    cout << "Symbol table has been written to 'lextable' file." << endl;
+    cout << "Symbol table has been written to 'symbol_table.txt' file." << endl;
 
     return 0;
 }
