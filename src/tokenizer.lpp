@@ -25,7 +25,6 @@ NEWLINE     (\r\n|\r|\n)
 ESCAPE      \\[abfnrtv\\'\\"]
 
 %%
-"main"      { add_to_symbol_table("MAIN", yytext); }
 "int"       { add_to_symbol_table("INT", yytext); }
 "char"      { add_to_symbol_table("CHAR", yytext); }
 "long"      { add_to_symbol_table("LONG", yytext); }
