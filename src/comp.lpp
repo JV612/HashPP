@@ -3,6 +3,7 @@
 #include <iostream>
 #include <iomanip>
 #include <string>
+#include <algorithm>
 #include <map>
 #include <fstream> 
 
@@ -21,6 +22,7 @@ DIGIT       [0-9]
 ID          [a-zA-Z_][a-zA-Z0-9_]*
 WS          [ \t]+
 NEWLINE     (\r\n|\r|\n)
+ESCAPE      \\[abfnrtv\\'\\"]
 
 %%
 "main"      { add_to_symbol_table("MAIN", yytext); }
@@ -122,11 +124,11 @@ NEWLINE     (\r\n|\r|\n)
     add_to_symbol_table("INT_LITERAL", yytext);
 }
 
-\'([^\\'\n]|\\.)\' {
+\'([^\\'\n]|{ESCAPE})\' {
     add_to_symbol_table("CHAR_LITERAL", yytext);
 }
 
-\"([^\\\"\n]|\\.)*\" {
+\"([^\\\"\n]|{ESCAPE})*\" {
     add_to_symbol_table("STRING_LITERAL", yytext);
 }
 
@@ -164,15 +166,21 @@ int main(int argc, char* argv[]) {
     string inputPath = argv[1];
     size_t lastSlash = inputPath.find_last_of("/\\");
     string inputFileName = (lastSlash == string::npos) ? inputPath : inputPath.substr(lastSlash + 1);
-    // Remove .c extension from inputFileName if present
+
+    // Remove .c or .cpp extension from inputFileName if present
     string baseFileName = inputFileName;
-    size_t dotPos = baseFileName.rfind(".c");
-    if (dotPos != string::npos && dotPos == baseFileName.length() - 2) {
-        baseFileName = baseFileName.substr(0, dotPos);
+
+    // Find last dot
+    size_t dotPos = baseFileName.rfind('.');
+    if (dotPos != string::npos) {
+        string ext = baseFileName.substr(dotPos); // get extension
+        if (ext == ".c" || ext == ".cpp") {
+            baseFileName = baseFileName.substr(0, dotPos);
+        }
     }
 
     // Construct output file path
-    string outputFilePath = "results/table_" + baseFileName;
+    string outputFilePath = "results/table_" + baseFileName + ".txt";
 
     ofstream outputFile(outputFilePath);
     if (!outputFile.is_open()) {
@@ -180,14 +188,24 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    outputFile << "Symbol Table:\n";
-    outputFile << "--------------------------------------------------\n";
-    outputFile << left << setw(20) << "Lexeme" << "\t\t" << setw(20) << "Token" << "\n";
-    outputFile << "--------------------------------------------------\n";
+    size_t maxLexemeLen = 0;
     for (const auto& entry : symbolTable) {
-        outputFile << left << setw(20) << entry.first << "\t\t" << setw(20) << entry.second << "\n";
+        maxLexemeLen = std::max(maxLexemeLen, entry.first.size());
     }
-    
+
+    size_t lexemeColumnWidth = maxLexemeLen + 4;
+
+    outputFile << "Symbol Table:\n";
+    outputFile << string(lexemeColumnWidth + 20, '-') << "\n";
+    outputFile << left << setw(lexemeColumnWidth) << "Lexeme" 
+            << setw(20) << "Token" << "\n";
+    outputFile << string(lexemeColumnWidth + 20, '-') << "\n";
+
+    for (const auto& entry : symbolTable) {
+        outputFile << left << setw(lexemeColumnWidth) << entry.first
+                << setw(20) << entry.second << "\n";
+    }
+
     outputFile.close();
     cout << "Symbol table has been written to '" << outputFilePath << "' file." << endl;
 
