@@ -35,6 +35,7 @@ NEWLINE     (\r\n|\r|\n)
 "for"       { add_to_symbol_table("FOR", yytext); }
 "while"     { add_to_symbol_table("WHILE", yytext); }
 "do"        { add_to_symbol_table("DO", yytext); }
+"until"     { add_to_symbol_table("UNTIL", yytext); }
 "break"     { add_to_symbol_table("BREAK", yytext); }
 "continue"  { add_to_symbol_table("CONTINUE", yytext); }
 "goto"      { add_to_symbol_table("GOTO", yytext); }
@@ -51,6 +52,7 @@ NEWLINE     (\r\n|\r|\n)
 "true"      { add_to_symbol_table("TRUE", yytext); }
 "false"     { add_to_symbol_table("FALSE", yytext); }
 "nullptr"   { add_to_symbol_table("NULLPTR", yytext); }
+"sizeof"    { add_to_symbol_table("SIZEOF", yytext); }
 
 "//".*      { add_to_symbol_table("COMMENT", yytext); }
 
