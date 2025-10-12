@@ -1,208 +1,290 @@
 %option noyywrap
 %{
-#include <iostream>
-#include <iomanip>
+#include "ansic.tab.h"  
+#include <string.h>
 #include <string>
-#include <algorithm>
-#include <map>
-#include <fstream> 
-
+#include <stdlib.h>
+#include <vector>
+#include "symbol_table.h"
 using namespace std;
 
-map<string, string> symbolTable;
+extern SymbolTable* proper_symbol_table;
 
-void add_to_symbol_table(const string& token, const string& lexeme) {
-    if (symbolTable.find(lexeme) == symbolTable.end()) {
-        symbolTable[lexeme] = token;
+struct TokenEntry {
+    int line;
+    string lexeme;
+    string token;
+    string token_type; 
+};
+
+vector<TokenEntry> token_table;
+
+void add_token(int line, const string& lexeme, const string& token, const string& token_type = "-") {
+    token_table.push_back({line, lexeme, token, token_type});
+}
+
+#include <unordered_map>
+
+enum TypeKind {
+    TYPE_KIND_BUILTIN,
+    TYPE_KIND_TYPEDEF,
+    TYPE_KIND_TAG_STRUCT,
+    TYPE_KIND_TAG_CLASS,
+    TYPE_KIND_TAG_ENUM,       /* <-- added */
+    TYPE_KIND_FORWARD_DECL
+};
+
+static std::vector<std::unordered_map<std::string, TypeKind>> type_scopes;
+
+static const TypeKind* find_type_kind(const char *name) {
+    if (!name) return nullptr;
+    std::string s(name);
+    for (int i = (int)type_scopes.size() - 1; i >= 0; --i) {
+        auto &map = type_scopes[i];
+        auto it = map.find(s);
+        if (it != map.end()) return &it->second;
+    }
+    return nullptr;
+}
+
+
+void types_init(void) {
+    type_scopes.clear();
+    type_scopes.emplace_back();
+    auto &g = type_scopes.back();
+    g["int"] = TYPE_KIND_BUILTIN;
+    g["char"] = TYPE_KIND_BUILTIN;
+    g["float"] = TYPE_KIND_BUILTIN;
+    g["double"] = TYPE_KIND_BUILTIN;
+    g["void"] = TYPE_KIND_BUILTIN;
+    g["bool"] = TYPE_KIND_BUILTIN;
+}
+
+void types_free(void) {
+    type_scopes.clear();
+}
+
+void types_enter_scope(void) {
+    type_scopes.emplace_back();
+    
+    // Also handle proper symbol table scope
+    if (proper_symbol_table) {
+        proper_symbol_table->enter_scope();
     }
 }
+
+void types_leave_scope(void) {
+    if (!type_scopes.empty()) type_scopes.pop_back();
+    if (type_scopes.empty()) type_scopes.emplace_back(); 
+    
+    // Also handle proper symbol table scope
+    if (proper_symbol_table) {
+        proper_symbol_table->exit_scope();
+    }
+}
+
+void types_add_builtin(const char *name) {
+    if (!name) return;
+    type_scopes[0][std::string(name)] = TYPE_KIND_BUILTIN;
+}
+
+void types_add_typedef(const char *name) {
+    if (!name) return;
+    type_scopes.back()[std::string(name)] = TYPE_KIND_TYPEDEF;
+}
+
+void types_add_tag(const char *name, TypeKind kind) {
+    if (!name) return;
+    type_scopes.back()[std::string(name)] = kind;
+}
+
+void types_mark_defined(const char *name, TypeKind concrete_kind) {
+    if (!name) return;
+    std::string s(name);
+    for (int i = (int)type_scopes.size() - 1; i >= 0; --i) {
+        auto &map = type_scopes[i];
+        auto it = map.find(s);
+        if (it != map.end()) { it->second = concrete_kind; return; }
+    }
+    type_scopes.back()[s] = concrete_kind;
+}
+
+bool types_is_known(const char *name) {
+    return find_type_kind(name) != nullptr;
+}
+
+bool types_is_typedef(const char *name) {
+    const TypeKind *k = find_type_kind(name);
+    return k && (*k == TYPE_KIND_TYPEDEF);
+}
+
+bool types_is_complete(const char *name) {
+    const TypeKind *k = find_type_kind(name);
+    return k && (*k != TYPE_KIND_FORWARD_DECL);
+}
+
+
+
 %}
 
 DIGIT       [0-9]
 ID          [a-zA-Z_][a-zA-Z0-9_]*
 WS          [ \t]+
 NEWLINE     (\r\n|\r|\n)
-ESCAPE      \\[abfnrtv\\'\\"]
+ESCAPE      \\[abfnrtv0\\'\\"]
 
 %%
-"int"       { add_to_symbol_table("INT", yytext); }
-"char"      { add_to_symbol_table("CHAR", yytext); }
-"long"      { add_to_symbol_table("LONG", yytext); }
-"float"     { add_to_symbol_table("FLOAT", yytext); }
-"double"    { add_to_symbol_table("DOUBLE", yytext); }
-"bool"      { add_to_symbol_table("BOOL", yytext); }
-"if"        { add_to_symbol_table("IF", yytext); }
-"else"      { add_to_symbol_table("ELSE", yytext); }
-"for"       { add_to_symbol_table("FOR", yytext); }
-"while"     { add_to_symbol_table("WHILE", yytext); }
-"do"        { add_to_symbol_table("DO", yytext); }
-"until"     { add_to_symbol_table("UNTIL", yytext); }
-"break"     { add_to_symbol_table("BREAK", yytext); }
-"continue"  { add_to_symbol_table("CONTINUE", yytext); }
-"goto"      { add_to_symbol_table("GOTO", yytext); }
-"switch"    { add_to_symbol_table("SWITCH", yytext); }
-"case"      { add_to_symbol_table("CASE", yytext); }
-"default"   { add_to_symbol_table("DEFAULT", yytext); }
-"return"    { add_to_symbol_table("RETURN", yytext); }
-"void"      { add_to_symbol_table("VOID", yytext); }
-"typedef"   { add_to_symbol_table("TYPEDEF", yytext); }
-"enum"      { add_to_symbol_table("ENUM", yytext); }
-"union"     { add_to_symbol_table("UNION", yytext); }
-"struct"    { add_to_symbol_table("STRUCT", yytext); }
-"static"    { add_to_symbol_table("STATIC", yytext); }
-"true"      { add_to_symbol_table("TRUE", yytext); }
-"false"     { add_to_symbol_table("FALSE", yytext); }
-"nullptr"   { add_to_symbol_table("NULLPTR", yytext); }
-"sizeof"    { add_to_symbol_table("SIZEOF", yytext); }
+"int"       { add_token(yylineno, "int", "INT"); return INT; }
+"char"      { add_token(yylineno, "char", "CHAR"); return CHAR; }
+"double"    { add_token(yylineno, "double", "DOUBLE"); return DOUBLE; }
+"bool"      { add_token(yylineno, "bool", "BOOL"); return BOOL; }
+"if"        { add_token(yylineno, "if", "IF"); return IF; }
+"else"      { add_token(yylineno, "else", "ELSE"); return ELSE; }
+"for"       { add_token(yylineno, "for", "FOR"); return FOR; }
+"while"     { add_token(yylineno, "while", "WHILE"); return WHILE; }
+"until"     { add_token(yylineno, "until", "UNTIL"); return UNTIL; }
+"do"        { add_token(yylineno, "do", "DO"); return DO; }
+"break"     { add_token(yylineno, "break", "BREAK"); return BREAK; }
+"continue"  { add_token(yylineno, "continue", "CONTINUE"); return CONTINUE; }
+"goto"      { add_token(yylineno, "goto", "GOTO"); return GOTO; }
+"switch"    { add_token(yylineno, "switch", "SWITCH"); return SWITCH; }
+"case"      { add_token(yylineno, "case", "CASE"); return CASE; }
+"default"   { add_token(yylineno, "default", "DEFAULT"); return DEFAULT; }
+"return"    { add_token(yylineno, "return", "RETURN"); return RETURN; }
+"void"      { add_token(yylineno, "void", "VOID"); return VOID; }
+"typedef"   { add_token(yylineno, "typedef", "TYPEDEF"); return TYPEDEF; }
+"enum"      { add_token(yylineno, "enum", "ENUM"); return ENUM; }
+"union"     { add_token(yylineno, "union", "UNION"); return UNION; }
+"struct"    { add_token(yylineno, "struct", "STRUCT"); return STRUCT; }
+"static"    { add_token(yylineno, "static", "STATIC"); return STATIC; }
+"sizeof"    { add_token(yylineno, "sizeof", "SIZEOF"); return SIZEOF; }
+"true"      { add_token(yylineno, "true", "TRUE"); yylval.ival = 1; return BOOL_TRUE; }
+"false"     { add_token(yylineno, "false", "FALSE"); yylval.ival = 0; return BOOL_FALSE; }
+"null"      { add_token(yylineno, "null", "NULL"); yylval.ptr = NULL; return NULL_CONSTANT; }
+"nullptr"   { add_token(yylineno, "nullptr", "NULLPTR"); yylval.ptr = NULL; return NULLPTR_CONSTANT; }
+"const"     { add_token(yylineno, "const", "CONST"); return CONST; }
+"volatile"  { add_token(yylineno, "volatile", "VOLATILE"); return VOLATILE; }
+"class"     { add_token(yylineno, "class", "CLASS"); return CLASS; }
+"public"    { add_token(yylineno, "public", "PUBLIC"); return PUBLIC; }
+"private"   { add_token(yylineno, "private", "PRIVATE"); return PRIVATE; }
+"protected" { add_token(yylineno, "protected", "PROTECTED"); return PROTECTED; }
+"signed"    { add_token(yylineno, "signed", "SIGNED"); return SIGNED; }
+"unsigned"  { add_token(yylineno, "unsigned", "UNSIGNED"); return UNSIGNED; }
+"..."       { add_token(yylineno, "...", "ELLIPSIS"); return ELLIPSIS; }
 
-"//".*      { add_to_symbol_table("COMMENT", yytext); }
+"//".*      { /* Skip comments */ }
 
-"+="        { add_to_symbol_table("ADD_ASSIGN", yytext); }
-"-="        { add_to_symbol_table("SUB_ASSIGN", yytext); }
-"*="        { add_to_symbol_table("MUL_ASSIGN", yytext); }
-"/="        { add_to_symbol_table("DIV_ASSIGN", yytext); }
-"%="        { add_to_symbol_table("MOD_ASSIGN", yytext); }
-"^="        { add_to_symbol_table("XOR_ASSIGN", yytext); }
-"&="        { add_to_symbol_table("AND_ASSIGN", yytext); }
-"|="        { add_to_symbol_table("OR_ASSIGN", yytext); }
-"<<="       { add_to_symbol_table("LSHIFT_ASSIGN", yytext); }
-">>="       { add_to_symbol_table("RSHIFT_ASSIGN", yytext); }
-"=="        { add_to_symbol_table("EQUAL", yytext); }
-"!="        { add_to_symbol_table("NOT_EQUAL", yytext); }
-"&&"        { add_to_symbol_table("LOG_AND", yytext); }
-"||"        { add_to_symbol_table("LOG_OR", yytext); }
-"->"        { add_to_symbol_table("PTR_OP", yytext); }
-"="         { add_to_symbol_table("ASSIGN", yytext); }
-"<="        { add_to_symbol_table("LESS_EQUAL", yytext); }
-">="        { add_to_symbol_table("GREATER_EQUAL", yytext); }
-">>"        { add_to_symbol_table("RSHIFT_OP", yytext); }
-"<<"        { add_to_symbol_table("LSHIFT_OP", yytext); }
-"<"         { add_to_symbol_table("LESS", yytext); }
-">"         { add_to_symbol_table("GREATER", yytext); }
-"!"         { add_to_symbol_table("LOG_NOT", yytext); }
-"++"        { add_to_symbol_table("INCREMENT", yytext); }
-"--"        { add_to_symbol_table("DECREMENT", yytext); }
-"+"         { add_to_symbol_table("ADD", yytext); }
-"-"         { add_to_symbol_table("SUBTRACT", yytext); }
-"*"         { add_to_symbol_table("STAR", yytext); }
-"/"         { add_to_symbol_table("DIVIDE", yytext); }
-"%"         { add_to_symbol_table("MODULO", yytext); }
-"^"         { add_to_symbol_table("XOR", yytext); }
-"&"         { add_to_symbol_table("AND", yytext); }
-"|"         { add_to_symbol_table("OR", yytext); }
-"~"         { add_to_symbol_table("BITWISE_NOT", yytext); }
-"?"         { add_to_symbol_table("QUESTION", yytext); }
-":"         { add_to_symbol_table("COLON", yytext); }
+"+="        { add_token(yylineno, "+=", "ADD_ASSIGN"); return ADD_ASSIGN; }
+"-="        { add_token(yylineno, "-=", "SUB_ASSIGN"); return SUB_ASSIGN; }
+"*="        { add_token(yylineno, "*=", "MUL_ASSIGN"); return MUL_ASSIGN; }
+"/="        { add_token(yylineno, "/=", "DIV_ASSIGN"); return DIV_ASSIGN; }
+"%="        { add_token(yylineno, "%=", "MOD_ASSIGN"); return MOD_ASSIGN; }
+"^="        { add_token(yylineno, "^=", "XOR_ASSIGN"); return XOR_ASSIGN; }
+"&="        { add_token(yylineno, "&=", "AND_ASSIGN"); return AND_ASSIGN; }
+"|="        { add_token(yylineno, "|=", "OR_ASSIGN"); return OR_ASSIGN; }
+"<<="       { add_token(yylineno, "<<=", "LEFT_ASSIGN"); return LEFT_ASSIGN; }
+">>="       { add_token(yylineno, ">>=", "RIGHT_ASSIGN"); return RIGHT_ASSIGN; }
+"=="        { add_token(yylineno, "==", "EQ_OP"); return EQ_OP; }
+"!="        { add_token(yylineno, "!=", "NE_OP"); return NE_OP; }
+"&&"        { add_token(yylineno, "&&", "AND_OP"); return AND_OP; }
+"||"        { add_token(yylineno, "||", "OR_OP"); return OR_OP; }
+"->"        { add_token(yylineno, "->", "PTR_OP"); return PTR_OP; }
+"="         { add_token(yylineno, "=", "="); return '='; }
+"<="        { add_token(yylineno, "<=", "LE_OP"); return LE_OP; }
+">="        { add_token(yylineno, ">=", "GE_OP"); return GE_OP; }
+">>"        { add_token(yylineno, ">>", "RIGHT_OP"); return RIGHT_OP; }
+"<<"        { add_token(yylineno, "<<", "LEFT_OP"); return LEFT_OP; }
+"<"         { add_token(yylineno, "<", "LT_OP"); return '<'; }
+">"         { add_token(yylineno, ">", "GT_OP"); return '>'; }
+"!"         { add_token(yylineno, "!", "NOT_OP"); return '!'; }
+"++"        { add_token(yylineno, "++", "INC_OP"); return INC_OP; }
+"--"        { add_token(yylineno, "--", "DEC_OP"); return DEC_OP; }
+"+"         { add_token(yylineno, "+", "ADD_OP"); return '+'; }
+"-"         { add_token(yylineno, "-", "SUB_OP"); return '-'; }
+"*"         { add_token(yylineno, "*", "MUL_OP"); return '*'; }
+"/"         { add_token(yylineno, "/", "DIV_OP"); return '/'; }
+"%"         { add_token(yylineno, "%", "MOD_OP"); return '%'; }
+"^"         { add_token(yylineno, "^", "XOR_OP"); return '^'; }
+"&"         { add_token(yylineno, "&", "AND_OP"); return '&'; }
+"|"         { add_token(yylineno, "|", "OR_OP"); return '|'; }
+"~"         { add_token(yylineno, "~", "BITWISE_NOT"); return '~'; }
+"?"         { add_token(yylineno, "?", "TERNARY_OP"); return '?'; }
+":"         { add_token(yylineno, ":", "COLON"); return ':'; }
 
-"("         { add_to_symbol_table("LPARAN", yytext); }
-")"         { add_to_symbol_table("RPARAN", yytext); }
-"{"         { add_to_symbol_table("LCBRACKET", yytext); }
-"}"         { add_to_symbol_table("RCBRACKET", yytext); }
-"["         { add_to_symbol_table("LSQBRACKET", yytext); }
-"]"         { add_to_symbol_table("RSQBRACKET", yytext); }
-";"         { add_to_symbol_table("SEMI_COLON", yytext); }
-","         { add_to_symbol_table("COMMA", yytext); }
-
-(({DIGIT}+"."{DIGIT}*)|("."{DIGIT}+))[fF] {
-    add_to_symbol_table("FLOAT_LITERAL", yytext);
-}
-
-{DIGIT}+[fF] {
-    add_to_symbol_table("FLOAT_LITERAL", yytext);
-}
+"("         { add_token(yylineno, "(", "LEFT_PAREN"); return '('; }
+")"         { add_token(yylineno, ")", "RIGHT_PAREN"); return ')'; }
+"{"         { add_token(yylineno, "{", "LEFT_BRACE"); return '{'; }
+"}"         { add_token(yylineno, "}", "RIGHT_BRACE"); return '}'; }
+"["         { add_token(yylineno, "[", "LEFT_BRACKET"); return '['; }
+"]"         { add_token(yylineno, "]", "RIGHT_BRACKET"); return ']'; }
+";"         { add_token(yylineno, ";", "SEMICOLON"); return ';'; }
+","         { add_token(yylineno, ",", "COMMA"); return ','; }
 
 (({DIGIT}+"."{DIGIT}*)|("."{DIGIT}+)) {
-    add_to_symbol_table("DOUBLE_LITERAL", yytext);
+    yylval.fval = atof(yytext);
+    add_token(yylineno, yytext, "FLOAT_CONSTANT");
+    return FLOAT_CONSTANT;
 }
 
 "." {
-    add_to_symbol_table("DOT", yytext); 
+    add_token(yylineno, yytext, "DOT");
+    return '.';
 }
 
 {DIGIT}+ {
-    add_to_symbol_table("INT_LITERAL", yytext);
+    yylval.ival = atoi(yytext);
+    add_token(yylineno, yytext, "INTEGER_CONSTANT");
+    return INT_CONSTANT;
 }
 
 \'([^\\'\n]|{ESCAPE})\' {
-    add_to_symbol_table("CHAR_LITERAL", yytext);
+    yylval.cval = yytext[1];
+    add_token(yylineno, yytext, "CHAR_CONSTANT");
+    return CHAR_CONSTANT;
 }
 
 \"([^\\\"\n]|{ESCAPE})*\" {
-    add_to_symbol_table("STRING_LITERAL", yytext);
+    yylval.str = strdup(yytext);
+    add_token(yylineno, yytext, "STRING_LITERAL");
+    return STRING_LITERAL;
 }
 
 {ID} {
-    add_to_symbol_table("IDENTIFIER", yytext);
-}
-
-{WS}        { /* Skip whitespace */ }
-{NEWLINE}   { /* Ignore newlines */ }
-
-.           { add_to_symbol_table("UNKNOWN", yytext); }
-
-%%
-
-int main(int argc, char* argv[]) 
-{
-    if (argc != 2) {
-        cerr << "Usage: " << argv[0] << " <input_file>\n";
-        return 1;
-    }
-
-    FILE* file = fopen(argv[1], "r");
-    if (!file) {
-        cerr << "Error: Cannot open file " << argv[1] << "\n";
-        return 1;
-    }
-
-    yyin = file;  
-    yylex();      
-    fclose(file); 
-    
-    system("mkdir -p results");
-
-    string inputPath = argv[1];
-    size_t lastSlash = inputPath.find_last_of("/\\");
-    string inputFileName = (lastSlash == string::npos) ? inputPath : inputPath.substr(lastSlash + 1);
-
-
-    string baseFileName = inputFileName;
-
-
-    size_t dotPos = baseFileName.rfind('.');
-    if (dotPos != string::npos) {
-        string ext = baseFileName.substr(dotPos);
-        if (ext == ".c" || ext == ".cpp") {
-            baseFileName = baseFileName.substr(0, dotPos);
+    // If an ordinary identifier exists in the current scope, it shadows any
+    // typedef/tag names from outer scopes. In that case, return IDENTIFIER.
+    if (proper_symbol_table) {
+        auto sym = proper_symbol_table->lookup_ident_current(yytext);
+        if (sym) {
+            yylval.str = strdup(yytext);
+            // Return TYPE_NAME for type-like symbols (structs, classes, typedefs)
+            if (sym->kind == SymbolKind::StructTag || sym->kind == SymbolKind::TypedefName) {
+                return TYPE_NAME;
+            }
+            return IDENTIFIER;
         }
     }
 
-    string outputFilePath = "results/table_" + baseFileName + ".txt";
-
-    ofstream outputFile(outputFilePath);
-    if (!outputFile.is_open()) {
-        cerr << "Failed to create output file: " << outputFilePath << endl;
-        return 1;
+    if (types_is_known(yytext)) {
+        yylval.str = strdup(yytext);
+        return TYPE_NAME;
+    } else {
+        yylval.str = strdup(yytext);
+        return IDENTIFIER;
     }
+}
 
-    size_t maxLexemeLen = 0;
-    for (const auto& entry : symbolTable) {
-        maxLexemeLen = std::max(maxLexemeLen, entry.first.size());
+
+{WS}        { /* Skip whitespace */ }
+{NEWLINE}   { yylineno++; }
+
+.           { fprintf(stderr, "Unknown character: %s at line %d\n", yytext, yylineno); }
+
+%%
+
+void print_token_table() {
+    printf("\n%-10s %-15s %-15s %-10s\n", "Line", "Lexeme", "Token", "Type");
+    printf("--------------------------------------------------------\n");
+    for (auto &t : token_table) {
+        printf("%-10d %-15s %-15s %-10s\n", t.line, t.lexeme.c_str(), t.token.c_str(), t.token_type.c_str());
     }
-
-    size_t lexemeColumnWidth = maxLexemeLen + 4;
-
-    outputFile << "Symbol Table:\n";
-    outputFile << string(lexemeColumnWidth + 20, '-') << "\n";
-    outputFile << left << setw(lexemeColumnWidth) << "Lexeme" << setw(20) << "Token" << "\n";
-    outputFile << string(lexemeColumnWidth + 20, '-') << "\n";
-
-    for (const auto& entry : symbolTable) {
-        outputFile << left << setw(lexemeColumnWidth) << entry.first << setw(20) << entry.second << "\n";
-    }
-
-    outputFile.close();
-    cout << "Symbol table has been written to '" << outputFilePath << "' file." << endl;
-
-    return 0;
 }
