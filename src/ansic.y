@@ -19,6 +19,7 @@ struct SimpleSymbol
     char* type;
     char* category;
     int line;
+    int scope;
 };
 
 enum TypeKind {
@@ -88,7 +89,7 @@ static std::string ast_trim(const std::string &s);
 static AstNode* ast_make_identifier_expr(const std::string &name);
 static AstNode* ast_make_literal_expr(LiteralKind kind, const std::string &lexeme);
 static AstNode* ast_make_integer_literal(int value);
-static AstNode* ast_make_floating_literal(float value);
+static AstNode* ast_make_floating_literal(double value);
 static AstNode* ast_make_char_literal(char value);
 static AstNode* ast_make_bool_literal(bool value);
 static AstNode* ast_make_null_literal();
@@ -101,18 +102,30 @@ static AstNode* ast_make_call_expr(AstNode* callee, AstNode* args_list);
 static AstNode* ast_make_expression_stmt(AstNode* expr_node);
 static AstNode* ast_make_cast_expr(AstNode* type_node, AstNode* expr_node);
 static AstNode* ast_make_subscript_expr(AstNode* array, AstNode* index);
+static AstNode* ast_make_if_stmt(AstNode* condition, AstNode* then_stmt, AstNode* else_stmt);
+static AstNode* ast_make_while_stmt(AstNode* condition, AstNode* body);
+static AstNode* ast_make_for_stmt(AstNode* init, AstNode* condition, AstNode* update, AstNode* body);
+static AstNode* ast_make_return_stmt(AstNode* value);
+static AstNode* ast_make_break_stmt();
+static AstNode* ast_make_continue_stmt();
+static AstNode* ast_make_goto_stmt(const std::string &label);
+static AstNode* ast_make_label_stmt(const std::string &label, AstNode* stmt);
+static int evaluate_constant_expression(AstNode* expr, bool* is_valid);
 static std::vector<AstNodePtr> ast_list_to_vector(AstNode* list_node);
 
 void add_symbol(const char* name, const char* type, const char* category, int line) {
+    // Get scope level from proper symbol table
+    int scope_level = proper_symbol_table ? proper_symbol_table->current_scope_level() : 0;
+    
     // Add to old table for printing
-    symbol_table.push_back({strdup(name), strdup(type), strdup(category), line});
+    symbol_table.push_back({strdup(name), strdup(type), strdup(category), line, scope_level});
     
     // Add to proper symbol table with error checking
     if (proper_symbol_table && name) {
         auto sym = std::make_shared<::Symbol>();
         sym->name = name;
         sym->line_declared = line;
-        sym->scope_level = proper_symbol_table->current_scope_level();
+        sym->scope_level = scope_level;
         
         if (strcmp(category, "variable") == 0 || strcmp(category, "pointer") == 0 || strcmp(category, "reference") == 0) {
             sym->kind = SymbolKind::Variable;
@@ -284,7 +297,6 @@ void add_function_symbol(const char* func_name, const char* return_type, int lin
     std::vector<TypePtr> param_types;
     for (const auto& param : current_param_list) {
         if (param && param->kind == AstNodeKind::ParameterDecl) {
-            auto &param_data = param->as<ParameterDeclNodeData>();
             std::string type_name = extract_parameter_type(param);
             sym->parameter_types.push_back(type_name);
             
@@ -306,8 +318,8 @@ void add_function_symbol(const char* func_name, const char* return_type, int lin
                 base_type = make_builtin_type(BuiltinTypeKind::Char);
             } else if (base_name == "bool") {
                 base_type = make_builtin_type(BuiltinTypeKind::Bool);
-            } else if (base_name == "float") {
-                base_type = make_builtin_type(BuiltinTypeKind::Float);
+            } else if (base_name == "double") {
+                base_type = make_builtin_type(BuiltinTypeKind::Double);
             } else if (base_name == "double") {
                 base_type = make_builtin_type(BuiltinTypeKind::Double);
             } else if (base_name == "void") {
@@ -334,7 +346,8 @@ void add_function_symbol(const char* func_name, const char* return_type, int lin
     sym->type = make_function_type(return_type_ptr, param_types, false); // false = not variadic
     
     // Add to old table for printing (use original function name for display)
-    symbol_table.push_back({strdup(func_name), strdup(return_type), strdup("function"), line});
+    int scope_level = proper_symbol_table ? proper_symbol_table->current_scope_level() : 0;
+    symbol_table.push_back({strdup(func_name), strdup(return_type), strdup("function"), line, scope_level});
     
     // Insert into proper symbol table using signature as key
     InsertResult result = proper_symbol_table->insert_ident(sym);
@@ -472,6 +485,11 @@ static void ast_initializer_list_append(AstNode* list_node, AstNode* element_nod
 static AstNode* ast_make_variable_decl(const std::string &name, AstNode* type_node, AstNode* init_node, bool is_typedef) {
     AstNode* node = ast_pool_create(AstNodeKind::VariableDecl);
     node->payload = VariableDeclNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0; // Column info not available in basic lexer
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
     auto &data = node->as<VariableDeclNodeData>();
     data.name = name;
     data.type_expr = ast_ptr_from_raw(type_node);
@@ -621,6 +639,11 @@ static AstNode* ast_make_enumerator_decl(const std::string &name, AstNode* value
 static AstNode* ast_make_member_access_expr(AstNode* object, const std::string &member_name, bool is_arrow) {
     AstNode* node = ast_pool_create(AstNodeKind::MemberAccessExpr);
     node->payload = MemberAccessExprNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
     auto &data = node->as<MemberAccessExprNodeData>();
     data.object = ast_ptr_from_raw(object);
     data.member_name = member_name;
@@ -666,10 +689,10 @@ static AstNode* ast_make_integer_literal(int value) {
     return ast_make_literal_expr(LiteralKind::Integer, std::to_string(value));
 }
 
-static AstNode* ast_make_floating_literal(float value) {
+static AstNode* ast_make_floating_literal(double value) {
     std::ostringstream oss;
     oss << value;
-    return ast_make_literal_expr(LiteralKind::Floating, oss.str());
+    return ast_make_literal_expr(LiteralKind::Double, oss.str());
 }
 
 static AstNode* ast_make_char_literal(char value) {
@@ -694,6 +717,11 @@ static AstNode* ast_make_binary_expr(const std::string &op, AstNode* lhs, AstNod
     if (!lhs || !rhs) return nullptr;
     AstNode* node = ast_pool_create(AstNodeKind::BinaryExpr);
     node->payload = BinaryExprNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
     auto &data = node->as<BinaryExprNodeData>();
     data.op = op;
     data.lhs = ast_ptr_from_raw(lhs);
@@ -704,6 +732,11 @@ static AstNode* ast_make_binary_expr(const std::string &op, AstNode* lhs, AstNod
 static AstNode* ast_make_unary_expr(const std::string &op, AstNode* operand, bool is_prefix) {
     AstNode* node = ast_pool_create(AstNodeKind::UnaryExpr);
     node->payload = UnaryExprNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
     auto &data = node->as<UnaryExprNodeData>();
     data.op = op;
     data.operand = ast_ptr_from_raw(operand);
@@ -715,6 +748,11 @@ static AstNode* ast_make_assignment_expr(const std::string &op, AstNode* lhs, As
     if (!lhs || !rhs) return nullptr;
     AstNode* node = ast_pool_create(AstNodeKind::AssignmentExpr);
     node->payload = AssignmentExprNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
     auto &data = node->as<AssignmentExprNodeData>();
     data.op = op;
     data.lhs = ast_ptr_from_raw(lhs);
@@ -726,6 +764,11 @@ static AstNode* ast_make_conditional_expr(AstNode* condition, AstNode* then_expr
     if (!condition || !then_expr || !else_expr) return nullptr;
     AstNode* node = ast_pool_create(AstNodeKind::ConditionalExpr);
     node->payload = ConditionalExprNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
     auto &data = node->as<ConditionalExprNodeData>();
     data.condition = ast_ptr_from_raw(condition);
     data.then_expr = ast_ptr_from_raw(then_expr);
@@ -750,6 +793,11 @@ static AstNode* ast_make_call_expr(AstNode* callee, AstNode* args_list) {
     if (!callee) return nullptr;
     AstNode* node = ast_pool_create(AstNodeKind::CallExpr);
     node->payload = CallExprNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
     auto &data = node->as<CallExprNodeData>();
     data.callee = ast_ptr_from_raw(callee);
     data.arguments = ast_list_to_vector(args_list);
@@ -769,6 +817,11 @@ static AstNode* ast_make_cast_expr(AstNode* type_node, AstNode* expr_node) {
     if (!expr_node) return nullptr;
     AstNode* node = ast_pool_create(AstNodeKind::CastExpr);
     node->payload = CastExprNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
     auto &data = node->as<CastExprNodeData>();
     data.target_type = ast_ptr_from_raw(type_node);
     data.expression = ast_ptr_from_raw(expr_node);
@@ -779,18 +832,212 @@ static AstNode* ast_make_subscript_expr(AstNode* array, AstNode* index) {
     if (!array || !index) return nullptr;
     AstNode* node = ast_pool_create(AstNodeKind::SubscriptExpr);
     node->payload = SubscriptExprNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
     auto &data = node->as<SubscriptExprNodeData>();
     data.array = ast_ptr_from_raw(array);
     data.index = ast_ptr_from_raw(index);
     return node;
 }
 
+static AstNode* ast_make_if_stmt(AstNode* condition, AstNode* then_stmt, AstNode* else_stmt) {
+    if (!condition || !then_stmt) return nullptr;
+    AstNode* node = ast_pool_create(AstNodeKind::IfStmt);
+    node->payload = IfStmtNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
+    auto &data = node->as<IfStmtNodeData>();
+    data.condition = ast_ptr_from_raw(condition);
+    data.then_branch = ast_ptr_from_raw(then_stmt);
+    data.else_branch = else_stmt ? ast_ptr_from_raw(else_stmt) : nullptr;
+    return node;
+}
+
+static AstNode* ast_make_while_stmt(AstNode* condition, AstNode* body) {
+    if (!condition || !body) return nullptr;
+    AstNode* node = ast_pool_create(AstNodeKind::WhileStmt);
+    node->payload = WhileStmtNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
+    auto &data = node->as<WhileStmtNodeData>();
+    data.condition = ast_ptr_from_raw(condition);
+    data.body = ast_ptr_from_raw(body);
+    return node;
+}
+
+static AstNode* ast_make_for_stmt(AstNode* init, AstNode* condition, AstNode* update, AstNode* body) {
+    if (!body) return nullptr;
+    AstNode* node = ast_pool_create(AstNodeKind::ForStmt);
+    node->payload = ForStmtNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
+    auto &data = node->as<ForStmtNodeData>();
+    data.init = init ? ast_ptr_from_raw(init) : nullptr;
+    data.condition = condition ? ast_ptr_from_raw(condition) : nullptr;
+    data.increment = update ? ast_ptr_from_raw(update) : nullptr;
+    data.body = ast_ptr_from_raw(body);
+    return node;
+}
+
+static AstNode* ast_make_return_stmt(AstNode* value) {
+    AstNode* node = ast_pool_create(AstNodeKind::ReturnStmt);
+    node->payload = ReturnStmtNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
+    auto &data = node->as<ReturnStmtNodeData>();
+    data.expression = value ? ast_ptr_from_raw(value) : nullptr;
+    return node;
+}
+
+static AstNode* ast_make_break_stmt() {
+    AstNode* node = ast_pool_create(AstNodeKind::BreakStmt);
+    node->payload = BreakStmtNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
+    return node;
+}
+
+static AstNode* ast_make_continue_stmt() {
+    AstNode* node = ast_pool_create(AstNodeKind::ContinueStmt);
+    node->payload = ContinueStmtNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
+    return node;
+}
+
+static AstNode* ast_make_goto_stmt(const std::string &label) {
+    AstNode* node = ast_pool_create(AstNodeKind::GotoStmt);
+    node->payload = GotoStmtNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
+    auto &data = node->as<GotoStmtNodeData>();
+    data.label = label;
+    return node;
+}
+
+static AstNode* ast_make_label_stmt(const std::string &label, AstNode* stmt) {
+    AstNode* node = ast_pool_create(AstNodeKind::LabelStmt);
+    node->payload = LabelStmtNodeData{};
+    // Set source range information
+    node->range.begin.line = yylineno;
+    node->range.begin.column = 0;
+    node->range.end.line = yylineno;
+    node->range.end.column = 0;
+    auto &data = node->as<LabelStmtNodeData>();
+    data.label = label;
+    data.statement = stmt ? ast_ptr_from_raw(stmt) : nullptr;
+    return node;
+}
+
 void print_symbol_table() {
     if (symbol_table.empty()) { printf("\n(symbol table empty)\n"); return; }
-    printf("\n%-8s %-25s %-15s %-12s\n", "Line", "Name", "Type", "Category");
-    printf("-----------------------------------------------------------------\n");
+    printf("\n%-8s %-25s %-15s %-12s %-8s\n", "Line", "Name", "Type", "Category", "Scope");
+    printf("---------------------------------------------------------------------------\n");
     for (auto &s : symbol_table) {
-        printf("%-8d %-25s %-15s %-12s\n", s.line, s.name, s.type, s.category);
+        printf("%-8d %-25s %-15s %-12s %-8d\n", s.line, s.name, s.type, s.category, s.scope);
+    }
+}
+
+static int evaluate_constant_expression(AstNode* expr, bool* is_valid) {
+    if (!expr || !is_valid) {
+        if (is_valid) *is_valid = false;
+        return 0;
+    }
+    
+    *is_valid = true;
+    
+    switch (expr->kind) {
+        case AstNodeKind::LiteralExpr: {
+            auto &lit = expr->as<LiteralExprNodeData>();
+            if (lit.literal_kind == LiteralKind::Integer) {
+                return std::stoi(lit.lexeme);
+            } else {
+                *is_valid = false;
+                return 0;
+            }
+        }
+        case AstNodeKind::BinaryExpr: {
+            auto &bin = expr->as<BinaryExprNodeData>();
+            bool left_valid, right_valid;
+            int left_val = evaluate_constant_expression(bin.lhs.get(), &left_valid);
+            int right_val = evaluate_constant_expression(bin.rhs.get(), &right_valid);
+            
+            if (!left_valid || !right_valid) {
+                *is_valid = false;
+                return 0;
+            }
+            
+            if (bin.op == "+") return left_val + right_val;
+            else if (bin.op == "-") return left_val - right_val;
+            else if (bin.op == "*") return left_val * right_val;
+            else if (bin.op == "/") {
+                if (right_val == 0) {
+                    *is_valid = false;
+                    return 0;
+                }
+                return left_val / right_val;
+            }
+            else if (bin.op == "%") {
+                if (right_val == 0) {
+                    *is_valid = false;
+                    return 0;
+                }
+                return left_val % right_val;
+            }
+            else if (bin.op == "^") return left_val ^ right_val;  // Bitwise XOR
+            else if (bin.op == "&") return left_val & right_val;  // Bitwise AND
+            else if (bin.op == "|") return left_val | right_val;  // Bitwise OR
+            else if (bin.op == "<<") return left_val << right_val; // Left shift
+            else if (bin.op == ">>") return left_val >> right_val; // Right shift
+            else {
+                *is_valid = false;
+                return 0;
+            }
+        }
+        case AstNodeKind::UnaryExpr: {
+            auto &un = expr->as<UnaryExprNodeData>();
+            bool operand_valid;
+            int operand_val = evaluate_constant_expression(un.operand.get(), &operand_valid);
+            
+            if (!operand_valid) {
+                *is_valid = false;
+                return 0;
+            }
+            
+            if (un.op == "+") return operand_val;
+            else if (un.op == "-") return -operand_val;
+            else {
+                *is_valid = false;
+                return 0;
+            }
+        }
+        default:
+            *is_valid = false;
+            return 0;
     }
 }
 
@@ -809,10 +1056,12 @@ static const char* diagnostic_severity_to_cstr(DiagnosticSeverity severity) {
 
 void print_diagnostics(const DiagnosticReporter &reporter) {
     for (const auto &diag : reporter.diagnostics()) {
-        fprintf(stderr, "%s: %s\n", diagnostic_severity_to_cstr(diag.severity), diag.message.c_str());
-    }
-    if (reporter.diagnostics().empty()) {
-        fprintf(stderr, "(no semantic diagnostics)\n");
+        if (diag.range.begin.line > 0) {
+            fprintf(stderr, "%s at line %d: %s\n", diagnostic_severity_to_cstr(diag.severity), 
+                    diag.range.begin.line, diag.message.c_str());
+        } else {
+            fprintf(stderr, "%s: %s\n", diagnostic_severity_to_cstr(diag.severity), diag.message.c_str());
+        }
     }
 }
 
@@ -825,7 +1074,7 @@ void print_diagnostics(const DiagnosticReporter &reporter) {
 %union {
     char* str;
     int ival;
-    float fval;
+    double fval;
     char cval;
     void* ptr;
     AstNode* node;
@@ -833,7 +1082,7 @@ void print_diagnostics(const DiagnosticReporter &reporter) {
 
 %token <str> IDENTIFIER STRING_LITERAL TYPE_NAME
 %token <ival> INT_CONSTANT BOOL_TRUE BOOL_FALSE
-%token <fval> FLOAT_CONSTANT
+%token <fval> DOUBLE_CONSTANT
 %token <cval> CHAR_CONSTANT
 %token <ptr> NULL_CONSTANT NULLPTR_CONSTANT
 
@@ -867,6 +1116,7 @@ void print_diagnostics(const DiagnosticReporter &reporter) {
 %type <node> type_specifier
 %type <node> class_specifier
 %type <node> class_member
+%type <node> class_member_or_access_spec
 %type <node> declaration_specifiers
 %type <node> struct_declaration_list
 %type <node> struct_declaration
@@ -884,6 +1134,10 @@ void print_diagnostics(const DiagnosticReporter &reporter) {
 %type <node> compound_statement
 %type <node> statement_list
 %type <node> statement
+%type <node> labeled_statement
+%type <node> selection_statement
+%type <node> iteration_statement
+%type <node> jump_statement
 
 %type <node> expression
 %type <node> assignment_expression
@@ -908,6 +1162,7 @@ void print_diagnostics(const DiagnosticReporter &reporter) {
 %type <node> initializer
 %type <node> initializer_list
 %type <node> constant_expression
+%type <node> type_name
 
 %type <str> assignment_operator
 
@@ -948,7 +1203,7 @@ primary_expression
 
 constant
     : INT_CONSTANT { $$ = ast_make_integer_literal($1); }
-    | FLOAT_CONSTANT { $$ = ast_make_floating_literal($1); }
+    | DOUBLE_CONSTANT { $$ = ast_make_floating_literal($1); }
     | CHAR_CONSTANT { $$ = ast_make_char_literal($1); }
     | BOOL_TRUE    { $$ = ast_make_bool_literal(true); }
     | BOOL_FALSE   { $$ = ast_make_bool_literal(false); }
@@ -1013,7 +1268,7 @@ unary_expression
 cast_expression
 	: unary_expression { $$ = $1; }
 	| '(' type_name ')' cast_expression {
-          $$ = ast_make_cast_expr(nullptr, $4);
+          $$ = ast_make_cast_expr($2, $4);
       }
 	;
 
@@ -1077,33 +1332,45 @@ equality_expression
 	;
 
 and_expression
-	: equality_expression
-	| and_expression '&' equality_expression
+	: equality_expression { $$ = $1; }
+	| and_expression '&' equality_expression {
+	      $$ = ast_make_binary_expr("&", $1, $3);
+	  }
 	;
 
 exclusive_or_expression
-	: and_expression
-	| exclusive_or_expression '^' and_expression
+	: and_expression { $$ = $1; }
+	| exclusive_or_expression '^' and_expression {
+	      $$ = ast_make_binary_expr("^", $1, $3);
+	  }
 	;
 
 inclusive_or_expression
-	: exclusive_or_expression
-	| inclusive_or_expression '|' exclusive_or_expression
+	: exclusive_or_expression { $$ = $1; }
+	| inclusive_or_expression '|' exclusive_or_expression {
+	      $$ = ast_make_binary_expr("|", $1, $3);
+	  }
 	;
 
 logical_and_expression
-	: inclusive_or_expression
-	| logical_and_expression AND_OP inclusive_or_expression
+	: inclusive_or_expression { $$ = $1; }
+	| logical_and_expression AND_OP inclusive_or_expression {
+	      $$ = ast_make_binary_expr("&&", $1, $3);
+	  }
 	;
 
 logical_or_expression
-	: logical_and_expression
-	| logical_or_expression OR_OP logical_and_expression
+	: logical_and_expression { $$ = $1; }
+	| logical_or_expression OR_OP logical_and_expression {
+	      $$ = ast_make_binary_expr("||", $1, $3);
+	  }
 	;
 
 conditional_expression
-	: logical_or_expression
-	| logical_or_expression '?' expression ':' conditional_expression
+	: logical_or_expression { $$ = $1; }
+	| logical_or_expression '?' expression ':' conditional_expression {
+	      $$ = ast_make_conditional_expr($1, $3, $5);
+	  }
 	;
 
 assignment_expression
@@ -1193,7 +1460,8 @@ init_declarator
               // Check for redeclaration before adding
               if (is_variable_already_declared_in_current_scope($1)) {
                   fprintf(stderr, "Error: Variable '%s' redeclared at line %d\n", $1, yylineno);
-                  YYABORT;
+                  has_redefinition_error = true;
+                  // Continue parsing to find more errors instead of aborting
               }
               
               if (current_type_str.find("typedef") != string::npos) {
@@ -1227,7 +1495,8 @@ init_declarator
               // Check for redeclaration before adding
               if (is_variable_already_declared_in_current_scope($1)) {
                   fprintf(stderr, "Error: Variable '%s' redeclared at line %d\n", $1, yylineno);
-                  YYABORT;
+                  has_redefinition_error = true;
+                  // Continue parsing to find more errors instead of aborting
               }
               
               if (current_type_str.find("typedef") != string::npos) {
@@ -1640,10 +1909,14 @@ direct_declarator
           declarator_is_array = true;
           // Try to extract array size from constant expression
           int size = 0;
-          if ($3 && $3->kind == AstNodeKind::LiteralExpr) {
-              auto &lit = $3->as<LiteralExprNodeData>();
-              if (lit.literal_kind == LiteralKind::Integer) {
-                  size = std::stoi(lit.lexeme);
+          bool valid_array_size = false;
+          
+          if ($3) {
+              // Try to evaluate constant expression
+              size = evaluate_constant_expression($3, &valid_array_size);
+              if (!valid_array_size) {
+                  fprintf(stderr, "Error at line %d: Array size must be a constant integer expression\n", yylineno);
+                  has_redefinition_error = true;
               }
           }
           declarator_array_dimensions.push_back(size);
@@ -1766,10 +2039,14 @@ identifier_list
 
 type_name
 	: specifier_qualifier_list {
+          std::string type_str = current_type;  // Save before reset
           reset_current_type();
+          $$ = ast_make_type_specifier(type_str);
       }
 	| specifier_qualifier_list abstract_declarator {
+          std::string type_str = current_type;  // Save before reset
           reset_current_type();
+          $$ = ast_make_type_specifier(type_str);
       }
 	;
 
@@ -1811,21 +2088,22 @@ initializer_list
 	;
 
 statement
-    : labeled_statement { $$ = nullptr; }
+    : labeled_statement { $$ = $1; }
     | compound_statement { $$ = $1; }
     | expression_statement { $$ = $1; }
-    | selection_statement { $$ = nullptr; }
-    | iteration_statement { $$ = nullptr; }
-    | jump_statement { $$ = nullptr; }
+    | selection_statement { $$ = $1; }
+    | iteration_statement { $$ = $1; }
+    | jump_statement { $$ = $1; }
     | declaration { $$ = $1; }
 	;
 
 labeled_statement
     : IDENTIFIER ':' statement {
           if ($1) add_symbol($1, "label", "label", yylineno);
+          $$ = ast_make_label_stmt($1 ? $1 : "", $3);
       }
-    | CASE constant_expression ':' statement
-    | DEFAULT ':' statement
+    | CASE constant_expression ':' statement { $$ = nullptr; }
+    | DEFAULT ':' statement { $$ = nullptr; }
     ;
 
 
@@ -1885,30 +2163,54 @@ expression_statement
       }
 	;
 selection_statement
-    : IF '(' expression ')' statement %prec THEN
-
-| IF '(' expression ')' statement ELSE statement
-| SWITCH '(' expression ')' statement
+    : IF '(' expression ')' statement %prec THEN {
+          $$ = ast_make_if_stmt($3, $5, nullptr);
+      }
+    | IF '(' expression ')' statement ELSE statement {
+          $$ = ast_make_if_stmt($3, $5, $7);
+      }
+    | SWITCH '(' expression ')' statement { $$ = nullptr; }
     ;
 
 iteration_statement
-	: WHILE '(' expression ')' statement
-	| UNTIL '(' expression ')' statement
-	| DO statement WHILE '(' expression ')' ';'
-	| FOR '(' expression_statement expression_statement ')' statement
-	| FOR '(' expression_statement expression_statement expression ')' statement
-	| FOR '(' declaration expression_statement ')' statement
-	| FOR '(' declaration expression_statement expression ')' statement
+	: WHILE '(' expression ')' statement {
+	      $$ = ast_make_while_stmt($3, $5);
+	  }
+	| UNTIL '(' expression ')' statement {
+	      $$ = ast_make_while_stmt($3, $5);
+	  }
+	| DO statement WHILE '(' expression ')' ';' { $$ = nullptr; }
+	| FOR '(' expression_statement expression_statement ')' statement {
+	      $$ = ast_make_for_stmt($3, $4, nullptr, $6);
+	  }
+	| FOR '(' expression_statement expression_statement expression ')' statement {
+	      $$ = ast_make_for_stmt($3, $4, $5, $7);
+	  }
+	| FOR '(' declaration expression_statement ')' statement {
+	      $$ = ast_make_for_stmt($3, $4, nullptr, $6);
+	  }
+	| FOR '(' declaration expression_statement expression ')' statement {
+	      $$ = ast_make_for_stmt($3, $4, $5, $7);
+	  }
 	;
 
 jump_statement
     : GOTO IDENTIFIER ';' {
           if ($2) add_symbol($2, "label", "goto-reference", yylineno);
+          $$ = ast_make_goto_stmt($2 ? $2 : "");
       }
-    | CONTINUE ';'
-    | BREAK ';'
-    | RETURN ';'
-    | RETURN expression ';'
+    | CONTINUE ';' {
+          $$ = ast_make_continue_stmt();
+      }
+    | BREAK ';' {
+          $$ = ast_make_break_stmt();
+      }
+    | RETURN ';' {
+          $$ = ast_make_return_stmt(nullptr);
+      }
+    | RETURN expression ';' {
+          $$ = ast_make_return_stmt($2);
+      }
     ;
 
 translation_unit
@@ -1944,9 +2246,15 @@ external_declaration
 function_definition
 	: declaration_specifiers declarator declaration_list compound_statement {
           std::string func_name = $2 ? std::string($2) : std::string();
-          std::string ret_spec = current_type_str.empty() ? std::string(saved_decl_type) : current_type_str;
-          if (ret_spec.empty()) ret_spec = "int";
-          AstNode* return_type = ast_make_type_specifier(ret_spec);
+          
+          // Use the declaration_specifiers AST node directly instead of global strings
+          AstNode* return_type = $1; // declaration_specifiers should contain the type
+          if (!return_type) {
+              // Fallback if declaration_specifiers didn't provide a type node
+              std::string ret_spec = current_type_str.empty() ? std::string(saved_decl_type) : current_type_str;
+              if (ret_spec.empty()) ret_spec = "int";
+              return_type = ast_make_type_specifier(ret_spec);
+          }
           AstNode* body_node = $4;
           $$ = ast_make_function_decl(func_name, return_type, std::move(current_param_list), body_node, true, current_func_is_variadic);
           current_param_list.clear();
@@ -1956,9 +2264,14 @@ function_definition
 	| declaration_specifiers declarator compound_statement {
           std::string func_name = $2 ? std::string($2) : std::string();
           
-          std::string ret_spec = current_type_str.empty() ? std::string(saved_decl_type) : current_type_str;
-          if (ret_spec.empty()) ret_spec = "int";
-          AstNode* return_type = ast_make_type_specifier(ret_spec);
+          // Use the declaration_specifiers AST node directly instead of global strings
+          AstNode* return_type = $1; // declaration_specifiers should contain the type
+          if (!return_type) {
+              // Fallback if declaration_specifiers didn't provide a type node
+              std::string ret_spec = current_type_str.empty() ? std::string(saved_decl_type) : current_type_str;
+              if (ret_spec.empty()) ret_spec = "int";
+              return_type = ast_make_type_specifier(ret_spec);
+          }
           AstNode* body_node = $3;
           $$ = ast_make_function_decl(func_name, return_type, std::move(current_param_list), body_node, true, current_func_is_variadic);
           current_param_list.clear();
@@ -2049,10 +2362,14 @@ int main(int argc, char *argv[]) {
     if (exit_code == 0) {
         printf("Parsing completed successfully!\n");
         print_symbol_table();
+        // Print generated IR
+        analyzer.get_ir_generator().print_ir();
         return 0;
     } else {
         printf("Parsing failed!\n");
         print_symbol_table();
+        // Print IR even if parsing failed (might have partial IR)
+        analyzer.get_ir_generator().print_ir();
         return exit_code;
     }
 }

@@ -29,25 +29,6 @@ void SymbolTable::exit_scope() {
     stack.pop_back();
 }
 
-static InsertResult handle_insert_map(std::unordered_map<std::string, SymbolPtr> &map_cur,
-                                      const std::vector<Scope> &stack,
-                                      int cur_level,
-                                      const SymbolPtr &sym,
-                                      std::function<void(const std::string&)> report_error)
-{
-    auto it = map_cur.find(sym->name);
-    if (it != map_cur.end()) {
-        return InsertResult::RedeclaredInSameScope;
-    }
-    // check shadowing
-    for (int i = cur_level - 1; i >= 0; --i) {
-        const auto &outerMap = map_cur; (void)outerMap; // placeholder
-        // We'll inspect the stack maps directly in caller
-    }
-    // Insert performed by caller
-    return InsertResult::OK;
-}
-
 InsertResult SymbolTable::insert_ident(const SymbolPtr &sym) {
     if (!sym) return InsertResult::ConflictWithDifferentKind;
     if (stack.empty()) enter_scope();
@@ -62,25 +43,12 @@ InsertResult SymbolTable::insert_ident(const SymbolPtr &sym) {
         return InsertResult::RedeclaredInSameScope;
     }
 
-    // detect shadowing
-    bool shadows = false;
-    for (int i = (int)stack.size() - 2; i >= 0; --i) {
-        auto oit = stack[i].idents.find(sym->name);
-        if (oit != stack[i].idents.end()) { shadows = true; break; }
-    }
-
     // set scope level metadata
     sym->scope_level = stack.back().level;
     cur[sym->name] = sym;
 
-    if (shadows) {
-        std::ostringstream ss;
-        ss << "Identifier '" << sym->name << "' at line " << sym->line_declared
-           << " shadows a previous declaration in an outer scope";
-        // Not fatal; just warn (we use report_error to capture warnings as well)
-        report_error(ss.str());
-        return InsertResult::ShadowedOuterScope;
-    }
+    // Note: Shadowing detection disabled - it produces too many false warnings
+    // for normal C patterns like parameter names being reused as local variables
 
     return InsertResult::OK;
 }
@@ -143,6 +111,19 @@ SymbolPtr SymbolTable::lookup_ident_current(const std::string &name) const {
     if (stack.empty()) return nullptr;
     auto it = stack.back().idents.find(name);
     if (it != stack.back().idents.end()) return it->second;
+    return nullptr;
+}
+
+SymbolPtr SymbolTable::lookup_ident_max_scope(const std::string &name, int max_scope_level) const {
+    // Search from innermost to outermost, but only return symbols from max_scope_level or lower
+    for (int i = (int)stack.size() - 1; i >= 0; --i) {
+        auto it = stack[i].idents.find(name);
+        if (it != stack[i].idents.end()) {
+            if (it->second->scope_level <= max_scope_level) {
+                return it->second;
+            }
+        }
+    }
     return nullptr;
 }
 

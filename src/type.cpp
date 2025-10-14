@@ -121,7 +121,6 @@ bool Type::is_integer() const {
 bool Type::is_floating() const {
     if (category != TypeCategory::Builtin) return false;
     switch (std::get<BuiltinTypeKind>(payload)) {
-        case BuiltinTypeKind::Float:
         case BuiltinTypeKind::Double:
         case BuiltinTypeKind::LongDouble:
             return true;
@@ -155,7 +154,6 @@ std::string Type::to_string() const {
                 case BuiltinTypeKind::UnsignedLong: oss << "unsigned long"; break;
                 case BuiltinTypeKind::LongLong: oss << "long long"; break;
                 case BuiltinTypeKind::UnsignedLongLong: oss << "unsigned long long"; break;
-                case BuiltinTypeKind::Float: oss << "float"; break;
                 case BuiltinTypeKind::Double: oss << "double"; break;
                 case BuiltinTypeKind::LongDouble: oss << "long double"; break;
             }
@@ -316,7 +314,6 @@ BuiltinTypeKind builtin_from_specifiers(bool is_signed, bool is_unsigned, int lo
     if (lower_base == "bool") return BuiltinTypeKind::Bool;
     if (lower_base == "void") return BuiltinTypeKind::Void;
 
-    if (lower_base == "float") return BuiltinTypeKind::Float;
     if (lower_base == "double") {
         if (long_count >= 1) return BuiltinTypeKind::LongDouble;
         return BuiltinTypeKind::Double;

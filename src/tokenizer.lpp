@@ -54,7 +54,6 @@ void types_init(void) {
     auto &g = type_scopes.back();
     g["int"] = TYPE_KIND_BUILTIN;
     g["char"] = TYPE_KIND_BUILTIN;
-    g["float"] = TYPE_KIND_BUILTIN;
     g["double"] = TYPE_KIND_BUILTIN;
     g["void"] = TYPE_KIND_BUILTIN;
     g["bool"] = TYPE_KIND_BUILTIN;
@@ -222,8 +221,8 @@ ESCAPE      \\[abfnrtv0\\'\\"]
 
 (({DIGIT}+"."{DIGIT}*)|("."{DIGIT}+)) {
     yylval.fval = atof(yytext);
-    add_token(yylineno, yytext, "FLOAT_CONSTANT");
-    return FLOAT_CONSTANT;
+    add_token(yylineno, yytext, "DOUBLE_CONSTANT");
+    return DOUBLE_CONSTANT;
 }
 
 "." {

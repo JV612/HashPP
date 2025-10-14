@@ -36,6 +36,9 @@ public:
     SymbolPtr lookup_ident(const std::string &name) const;
     SymbolPtr lookup_tag(const std::string &name) const;
     SymbolPtr lookup_typedef(const std::string &name) const;
+    
+    // lookup with scope level restriction (only symbols from current scope or outer scopes)
+    SymbolPtr lookup_ident_max_scope(const std::string &name, int max_scope_level) const;
 
     // lookup in current (innermost) scope only
     SymbolPtr lookup_ident_current(const std::string &name) const;

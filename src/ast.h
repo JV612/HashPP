@@ -62,7 +62,7 @@ enum class AstNodeKind {
 
 enum class LiteralKind {
     Integer,
-    Floating,
+    Double,
     Character,
     Boolean,
     String,
@@ -134,6 +134,18 @@ struct ForStmtNodeData {
     AstNodePtr condition;
     AstNodePtr increment;
     AstNodePtr body;
+};
+
+struct ReturnStmtNodeData {
+    AstNodePtr expression; // may be null for void return
+};
+
+struct BreakStmtNodeData {
+    // No additional data needed
+};
+
+struct ContinueStmtNodeData {
+    // No additional data needed  
 };
 
 struct GotoStmtNodeData {
@@ -297,6 +309,9 @@ using AstNodePayload = std::variant<
     IfStmtNodeData,
     WhileStmtNodeData,
     ForStmtNodeData,
+    ReturnStmtNodeData,
+    BreakStmtNodeData,
+    ContinueStmtNodeData,
     GotoStmtNodeData,
     LabelStmtNodeData,
     ExpressionStmtNodeData,

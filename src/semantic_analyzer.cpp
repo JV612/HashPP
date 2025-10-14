@@ -93,6 +93,18 @@ void SemanticAnalyzer::analyze_variable_decl(const AstNodePtr &node, SymbolTable
     // array of 3, where each element is (array of 4 ints)
     // So we build: int -> int[4] -> int[4][3]
     if (data.is_array && !data.array_dimensions.empty()) {
+        // Validate array dimensions first
+        for (size_t i = 0; i < data.array_dimensions.size(); ++i) {
+            int dim = data.array_dimensions[i];
+            if (dim < 0) {
+                reporter.report(DiagnosticSeverity::Error, 
+                    "Array size must be a positive integer constant", node->range);
+            } else if (dim == 0 && i != 0) { // Allow first dimension to be 0 for incomplete arrays
+                reporter.report(DiagnosticSeverity::Error, 
+                    "Only the first array dimension can be unspecified", node->range);
+            }
+        }
+        
         // Build from rightmost (innermost) dimension
         for (auto it = data.array_dimensions.rbegin(); it != data.array_dimensions.rend(); ++it) {
             int dim = *it;
@@ -105,14 +117,58 @@ void SemanticAnalyzer::analyze_variable_decl(const AstNodePtr &node, SymbolTable
         sym->type = type;
     }
 
+    // Validate const variables must be initialized
+    if (type && type->qualifiers.is_const && !data.initializer) {
+        reporter.report(DiagnosticSeverity::Error, 
+            "Const variable '" + data.name + "' must be initialized at declaration", 
+            node->range);
+    }
+
     // Validate initializer if present
     if (data.initializer) {
+        // Check for array initializer validation
+        if (data.is_array && data.initializer->kind == AstNodeKind::InitializerList) {
+            auto &init_data = data.initializer->as<InitializerListNodeData>();
+            
+            // Validate array initializer count against array size
+            if (!data.array_dimensions.empty()) {
+                int expected_size = data.array_dimensions[0]; // First dimension
+                int actual_size = init_data.elements.size();
+                
+                if (expected_size > 0 && actual_size > expected_size) {
+                    reporter.report(DiagnosticSeverity::Error, 
+                        "Too many initializers for array '" + data.name + "': expected at most " + 
+                        std::to_string(expected_size) + " but got " + std::to_string(actual_size), 
+                        node->range);
+                }
+            }
+        }
+        
         TypePtr init_type = infer_expression_type(data.initializer);
         if (init_type && !is_assignment_compatible(type, init_type)) {
             reporter.report(DiagnosticSeverity::Error, 
                 "Incompatible initializer for variable '" + data.name + "': expected " + 
                 type_to_string(type) + " but got " + type_to_string(init_type), 
                 node->range);
+        }
+        
+        // Emit IR for variable initializer (simple case: non-array)
+        // For arrays, skip for now (will need to handle element-wise initialization)
+        if (!data.is_array && data.initializer) {
+            // Get scoped variable name
+            std::string scoped_name = get_scoped_variable_name(data.name, data.symbol);
+            
+            // For simple literals, emit direct assignment
+            if (data.initializer->kind == AstNodeKind::LiteralExpr) {
+                auto &lit_data = data.initializer->as<LiteralExprNodeData>();
+                ir_gen.emit(IROpcode::ASSIGN, scoped_name, lit_data.lexeme, "", "", node->range.begin.line);
+            } else {
+                // For complex expressions, generate proper TAC and assign the final result
+                std::string rhs_result = generate_ir_for_expression(data.initializer);
+                if (!rhs_result.empty()) {
+                    ir_gen.emit(IROpcode::ASSIGN, scoped_name, rhs_result, "", "", node->range.begin.line);
+                }
+            }
         }
     }
 }
@@ -122,6 +178,11 @@ TypePtr SemanticAnalyzer::resolve_type_from_specifier(const AstNodePtr &type_nod
     const auto &spec = type_node->as<TypeSpecifierNodeData>();
     switch (spec.kind) {
         case TypeSpecifierKind::Builtin: {
+            // First validate the type specifier for invalid combinations
+            if (!validate_type_specifier(spec.name)) {
+                return nullptr; // Error already reported by validate_type_specifier
+            }
+            
             TypePtr builtin_type = resolve_builtin_type(spec);
             if (builtin_type) {
                 return builtin_type;
@@ -196,6 +257,7 @@ TypePtr SemanticAnalyzer::resolve_builtin_type(const TypeSpecifierNodeData &spec
     bool is_short = false;
     int long_count = 0;
     std::string base_name;
+    bool has_base_type = false;
 
     for (const auto &tok : tokens) {
         if (tok == "const" || tok == "volatile" || tok == "restrict" || tok == "_Atomic") {
@@ -206,7 +268,22 @@ TypePtr SemanticAnalyzer::resolve_builtin_type(const TypeSpecifierNodeData &spec
         if (tok == "unsigned") { is_unsigned = true; continue; }
         if (tok == "short") { is_short = true; continue; }
         if (tok == "long") { ++long_count; continue; }
-        base_name = tok;
+        
+        // Check if this is a base type name
+        if (tok == "int" || tok == "char" || tok == "bool" || tok == "void" || 
+            tok == "double") {
+            if (has_base_type) {
+                // Multiple base types detected - this is an error
+                return nullptr; // Will be handled by caller
+            }
+            base_name = tok;
+            has_base_type = true;
+            continue;
+        }
+        
+        // If we reach here, it's an unknown token - might be a user-defined type
+        // Don't treat it as error here, let the caller handle it
+        return nullptr;
     }
 
     TypeQualifierSet qualifier_set;
@@ -221,6 +298,43 @@ TypePtr SemanticAnalyzer::resolve_builtin_type(const TypeSpecifierNodeData &spec
     } catch (const std::exception &) {
         return nullptr;
     }
+}
+
+// Helper function to validate type specifier for invalid combinations
+bool SemanticAnalyzer::validate_type_specifier(const std::string& type_name) {
+    const auto tokens = tokenize_type_name(type_name);
+    if (tokens.empty()) return false;
+
+    std::vector<std::string> base_types;
+    
+    for (const auto &tok : tokens) {
+        // Skip qualifiers and modifiers
+        if (tok == "const" || tok == "volatile" || tok == "restrict" || tok == "_Atomic" ||
+            tok == "signed" || tok == "unsigned" || tok == "short" || tok == "long") {
+            continue;
+        }
+        
+        // Check if this is a base type name
+        if (tok == "int" || tok == "char" || tok == "bool" || tok == "void" || 
+            tok == "double") {
+            base_types.push_back(tok);
+        }
+    }
+    
+    // If we have multiple base types, it's invalid
+    if (base_types.size() > 1) {
+        std::string error_msg = "Invalid type specifier: multiple base types '";
+        for (size_t i = 0; i < base_types.size(); ++i) {
+            if (i > 0) error_msg += "' and '";
+            error_msg += base_types[i];
+        }
+        error_msg += "'";
+        // Report error with dummy range - ideally we'd have proper source location
+        reporter.report(DiagnosticSeverity::Error, error_msg, SourceRange{});
+        return false;
+    }
+    
+    return true;
 }
 
 void SemanticAnalyzer::analyze_function_decl(const AstNodePtr &node, SymbolTable &symbols) {
@@ -290,6 +404,10 @@ void SemanticAnalyzer::analyze_function_decl(const AstNodePtr &node, SymbolTable
 
     // Analyze function body if present
     if (data.body) {
+        // Set function return type context for return statement validation
+        TypePtr saved_return_type = current_function_return_type;
+        current_function_return_type = return_type;
+        
         // The function body (compound statement) will enter its own scope
         // We need to add parameters to that scope before analyzing statements
         // Store parameters temporarily so compound_stmt can access them
@@ -297,6 +415,9 @@ void SemanticAnalyzer::analyze_function_decl(const AstNodePtr &node, SymbolTable
         
         analyze_statement(data.body);
         // Note: saved_params_for_body is cleared by analyze_compound_stmt
+        
+        // Restore previous return type context
+        current_function_return_type = saved_return_type;
     }
 }
 
@@ -383,6 +504,30 @@ void SemanticAnalyzer::analyze_statement(const AstNodePtr &node) {
             }
             break;
         }
+        case AstNodeKind::IfStmt:
+            analyze_if_stmt(node);
+            break;
+        case AstNodeKind::WhileStmt:
+            analyze_while_stmt(node);
+            break;
+        case AstNodeKind::ForStmt:
+            analyze_for_stmt(node);
+            break;
+        case AstNodeKind::ReturnStmt:
+            analyze_return_stmt(node);
+            break;
+        case AstNodeKind::BreakStmt:
+            analyze_break_stmt(node);
+            break;
+        case AstNodeKind::ContinueStmt:
+            analyze_continue_stmt(node);
+            break;
+        case AstNodeKind::GotoStmt:
+            analyze_goto_stmt(node);
+            break;
+        case AstNodeKind::LabelStmt:
+            analyze_label_stmt(node);
+            break;
         default:
             break;
     }
@@ -432,7 +577,11 @@ void SemanticAnalyzer::analyze_compound_stmt(const AstNodePtr &node) {
 void SemanticAnalyzer::analyze_expression_stmt(const AstNodePtr &node) {
     auto &data = node->as<ExpressionStmtNodeData>();
     if (data.expression) {
+        // Perform semantic analysis
         infer_expression_type(data.expression);
+        
+        // Generate IR for the expression
+        generate_ir_for_expression(data.expression);
     }
 }
 
@@ -470,10 +619,23 @@ TypePtr SemanticAnalyzer::infer_expression_type(const AstNodePtr &expr) {
             break;
         case AstNodeKind::ConditionalExpr: {
             auto &data = expr->as<ConditionalExprNodeData>();
-            infer_expression_type(data.condition);
+            TypePtr condition_type = infer_expression_type(data.condition);
             TypePtr then_type = infer_expression_type(data.then_expr);
             TypePtr else_type = infer_expression_type(data.else_expr);
+            
+            // Validate condition is scalar type
+            if (condition_type && !condition_type->is_scalar()) {
+                reporter.report(DiagnosticSeverity::Error, 
+                    "Condition in ternary operator must be a scalar type", expr->range);
+            }
+            
             result = perform_usual_arithmetic_conversions(then_type, else_type);
+            break;
+        }
+        case AstNodeKind::CastExpr: {
+            // For now, always return int for casts to get basic functionality working
+            // TODO: Properly parse and resolve target type from cast expression
+            result = make_builtin_type(BuiltinTypeKind::Int);
             break;
         }
         default:
@@ -633,7 +795,6 @@ std::string SemanticAnalyzer::generate_call_signature(const std::string& func_na
                     case BuiltinTypeKind::Char: signature += "char"; break;
                     case BuiltinTypeKind::Int: signature += "int"; break;
                     case BuiltinTypeKind::Bool: signature += "bool"; break;
-                    case BuiltinTypeKind::Float: signature += "float"; break;
                     case BuiltinTypeKind::Double: signature += "double"; break;
                     default: signature += "unknown"; break;
                 }
@@ -647,7 +808,6 @@ std::string SemanticAnalyzer::generate_call_signature(const std::string& func_na
                         case BuiltinTypeKind::Char: signature += "char*"; break;
                         case BuiltinTypeKind::Int: signature += "int*"; break;
                         case BuiltinTypeKind::Bool: signature += "bool*"; break;
-                        case BuiltinTypeKind::Float: signature += "float*"; break;
                         case BuiltinTypeKind::Double: signature += "double*"; break;
                         default: signature += "unknown*"; break;
                     }
@@ -672,10 +832,38 @@ SymbolPtr SemanticAnalyzer::find_best_overload(const std::string& func_name, con
     // Generate the expected signature for this call
     std::string expected_signature = generate_call_signature(func_name, arg_types);
     
-    // Try to find an exact match
+    // Try to find an exact match first
     SymbolPtr exact_match = current_symbols->lookup_ident(expected_signature);
     if (exact_match && exact_match->kind == SymbolKind::Function) {
         return exact_match;
+    }
+    
+    // If no exact match, look for compatible overloads with implicit conversions
+    // Check all functions with the same base name
+    SymbolPtr base_func = current_symbols->lookup_ident(func_name);
+    if (base_func && base_func->kind == SymbolKind::Function && base_func->type && 
+        base_func->type->category == TypeCategory::Function) {
+        
+        auto &func_info = std::get<FunctionTypeInfo>(base_func->type->payload);
+        
+        // Check if argument count matches (for non-variadic functions)
+        if (!func_info.is_variadic && arg_types.size() != func_info.param_types.size()) {
+            return nullptr; // Wrong number of arguments
+        }
+        
+        // Check if all arguments are assignment-compatible
+        bool all_compatible = true;
+        size_t check_count = std::min(arg_types.size(), func_info.param_types.size());
+        for (size_t i = 0; i < check_count; ++i) {
+            if (!is_assignment_compatible(func_info.param_types[i], arg_types[i])) {
+                all_compatible = false;
+                break;
+            }
+        }
+        
+        if (all_compatible) {
+            return base_func; // Found a compatible overload
+        }
     }
     
     return nullptr; // No matching overload found
@@ -786,7 +974,15 @@ TypePtr SemanticAnalyzer::infer_identifier_expr(const AstNodePtr &expr) {
     
     // Always try fresh lookup from symbol table
     if (current_symbols) {
-        auto sym = current_symbols->lookup_ident(data.name);
+        SymbolPtr sym;
+        
+        // If we have a scope restriction, use scope-aware lookup
+        if (max_scope_for_lookup >= 0) {
+            sym = current_symbols->lookup_ident_max_scope(data.name, max_scope_for_lookup);
+        } else {
+            sym = current_symbols->lookup_ident(data.name);
+        }
+        
         if (sym) {
             data.symbol = sym;
             if (sym->type) {
@@ -949,7 +1145,7 @@ TypePtr SemanticAnalyzer::infer_member_access_expr(const AstNodePtr &expr) {
                     
                     // Handle user-defined types that might be classified as Builtin
                     if (type_spec.kind == TypeSpecifierKind::Builtin && type_spec.name != "int" && 
-                        type_spec.name != "char" && type_spec.name != "float" && type_spec.name != "double" &&
+                        type_spec.name != "char" && type_spec.name != "double" &&
                         type_spec.name != "void" && type_spec.name != "short" && type_spec.name != "long") {
                         // This is likely a user-defined type (struct/class name)
                         TypePtr base = make_struct_type(type_spec.name);
@@ -981,7 +1177,7 @@ TypePtr SemanticAnalyzer::infer_literal_expr(const AstNodePtr &expr) {
     switch (data.literal_kind) {
         case LiteralKind::Integer:
             return make_builtin_type(BuiltinTypeKind::Int);
-        case LiteralKind::Floating:
+        case LiteralKind::Double:
             return make_builtin_type(BuiltinTypeKind::Double);
         case LiteralKind::Character:
             return make_builtin_type(BuiltinTypeKind::Char);
@@ -1013,9 +1209,7 @@ TypePtr SemanticAnalyzer::perform_usual_arithmetic_conversions(const TypePtr &lh
             
             if (lhs_kind == BuiltinTypeKind::LongDouble || rhs_kind == BuiltinTypeKind::LongDouble)
                 return make_builtin_type(BuiltinTypeKind::LongDouble);
-            if (lhs_kind == BuiltinTypeKind::Double || rhs_kind == BuiltinTypeKind::Double)
-                return make_builtin_type(BuiltinTypeKind::Double);
-            return make_builtin_type(BuiltinTypeKind::Float);
+            return make_builtin_type(BuiltinTypeKind::Double);
         }
     }
     
@@ -1064,4 +1258,386 @@ bool SemanticAnalyzer::is_assignment_compatible(const TypePtr &lhs, const TypePt
     }
     
     return false;
+}
+
+// Control flow statement analysis functions
+void SemanticAnalyzer::analyze_if_stmt(const AstNodePtr &node) {
+    auto &data = node->as<IfStmtNodeData>();
+    
+    // Generate labels for control flow
+    std::string else_label = ir_gen.new_label();    // L1: else branch
+    std::string end_label = ir_gen.new_label();     // L2: end of if statement
+    
+    // Analyze and generate IR for condition expression
+    if (data.condition) {
+        // Set scope context for condition analysis (condition should only see outer scope symbols)
+        int saved_max_scope = max_scope_for_lookup;
+        // The if condition should only see symbols from the enclosing scope and above
+        // We need to exclude any scopes created by the if/else blocks themselves
+        max_scope_for_lookup = std::max(1, current_symbols->current_scope_level() - 3);
+        
+        TypePtr condition_type = infer_expression_type(data.condition);
+        if (condition_type) {
+            // Check that condition is a scalar type (can be used in boolean context)
+            if (!condition_type->is_scalar()) {
+                reporter.report(DiagnosticSeverity::Error, 
+                    "Condition in if statement must be a scalar type", 
+                    node->range);
+            }
+        }
+        
+        // Generate IR for condition and conditional jump (keep scope context)
+        std::string condition_result = generate_ir_for_expression(data.condition);
+        if (!condition_result.empty()) {
+            // If condition is false, jump to else_label
+            ir_gen.emit(IROpcode::CJUMP, "", condition_result, "0", else_label, node->range.begin.line);
+        }
+        
+        // Restore scope context
+        max_scope_for_lookup = saved_max_scope;
+    }
+    
+    // Analyze the then branch
+    if (data.then_branch) {
+        analyze_statement(data.then_branch);
+    }
+    
+    // Jump to end if there's an else branch
+    if (data.else_branch) {
+        ir_gen.emit(IROpcode::JUMP, "", "", "", end_label, node->range.begin.line);
+    }
+    
+    // Emit else label
+    ir_gen.emit(IROpcode::LABEL, "", "", "", else_label, node->range.begin.line);
+    
+    // Analyze the else branch if present
+    if (data.else_branch) {
+        analyze_statement(data.else_branch);
+    }
+    
+    // Emit end label
+    ir_gen.emit(IROpcode::LABEL, "", "", "", end_label, node->range.begin.line);
+}
+
+void SemanticAnalyzer::analyze_while_stmt(const AstNodePtr &node) {
+    auto &data = node->as<WhileStmtNodeData>();
+    
+    // Enter loop context for break/continue validation
+    bool saved_in_loop = in_loop_context;
+    in_loop_context = true;
+    
+    // Analyze the condition expression
+    if (data.condition) {
+        TypePtr condition_type = infer_expression_type(data.condition);
+        if (condition_type && !condition_type->is_scalar()) {
+            reporter.report(DiagnosticSeverity::Error, 
+                "Condition in while statement must be a scalar type", 
+                node->range);
+        }
+    }
+    
+    // Analyze the loop body
+    if (data.body) {
+        analyze_statement(data.body);
+    }
+    
+    // Restore loop context
+    in_loop_context = saved_in_loop;
+}
+
+void SemanticAnalyzer::analyze_for_stmt(const AstNodePtr &node) {
+    auto &data = node->as<ForStmtNodeData>();
+    
+    // Enter new scope for for-loop variable declarations
+    if (current_symbols) {
+        current_symbols->enter_scope();
+    }
+    
+    // Enter loop context for break/continue validation
+    bool saved_in_loop = in_loop_context;
+    in_loop_context = true;
+    
+    // Analyze initialization
+    if (data.init) {
+        analyze_statement(data.init);
+    }
+    
+    // Analyze condition
+    if (data.condition) {
+        TypePtr condition_type = infer_expression_type(data.condition);
+        if (condition_type && !condition_type->is_scalar()) {
+            reporter.report(DiagnosticSeverity::Error, 
+                "Condition in for statement must be a scalar type", 
+                node->range);
+        }
+    }
+    
+    // Analyze increment
+    if (data.increment) {
+        infer_expression_type(data.increment);
+    }
+    
+    // Analyze loop body
+    if (data.body) {
+        analyze_statement(data.body);
+    }
+    
+    // Restore context
+    in_loop_context = saved_in_loop;
+    
+    // Exit for-loop scope
+    if (current_symbols) {
+        current_symbols->exit_scope();
+    }
+}
+
+void SemanticAnalyzer::analyze_return_stmt(const AstNodePtr &node) {
+    auto &data = node->as<ReturnStmtNodeData>();
+    
+    // Check if we're inside a function
+    if (!current_function_return_type) {
+        reporter.report(DiagnosticSeverity::Error, 
+            "Return statement outside function", 
+            node->range);
+        return;
+    }
+    
+    if (data.expression) {
+        // Return with expression - first check if function is void
+        if (current_function_return_type && 
+            current_function_return_type->category == TypeCategory::Builtin) {
+            auto builtin_kind = std::get<BuiltinTypeKind>(current_function_return_type->payload);
+            if (builtin_kind == BuiltinTypeKind::Void) {
+                reporter.report(DiagnosticSeverity::Error, 
+                    "Return statement with value in void function", 
+                    node->range);
+                return; // Don't check type compatibility for void functions
+            }
+        }
+        
+        // Return with expression - check type compatibility for non-void functions
+        TypePtr expr_type = infer_expression_type(data.expression);
+        if (expr_type && current_function_return_type) {
+            if (!is_assignment_compatible(current_function_return_type, expr_type)) {
+                reporter.report(DiagnosticSeverity::Error, 
+                    "Return type mismatch: expected " + 
+                    type_to_string(current_function_return_type) + 
+                    " but got " + type_to_string(expr_type), 
+                    node->range);
+            }
+        }
+    } else {
+        // Return without expression - check if function returns void
+        if (current_function_return_type && 
+            current_function_return_type->category == TypeCategory::Builtin) {
+            auto builtin_kind = std::get<BuiltinTypeKind>(current_function_return_type->payload);
+            if (builtin_kind != BuiltinTypeKind::Void) {
+                reporter.report(DiagnosticSeverity::Error, 
+                    "Return statement without value in non-void function", 
+                    node->range);
+            }
+        }
+    }
+}
+
+void SemanticAnalyzer::analyze_break_stmt(const AstNodePtr &node) {
+    if (!in_loop_context && !in_switch_context) {
+        reporter.report(DiagnosticSeverity::Error, 
+            "Break statement not within loop or switch", 
+            node->range);
+    }
+}
+
+void SemanticAnalyzer::analyze_continue_stmt(const AstNodePtr &node) {
+    if (!in_loop_context) {
+        reporter.report(DiagnosticSeverity::Error, 
+            "Continue statement not within loop", 
+            node->range);
+    }
+}
+
+void SemanticAnalyzer::analyze_goto_stmt(const AstNodePtr &node) {
+    auto &data = node->as<GotoStmtNodeData>();
+    
+    // Record that this label is referenced (for later validation)
+    referenced_labels.insert(data.label);
+}
+
+void SemanticAnalyzer::analyze_label_stmt(const AstNodePtr &node) {
+    auto &data = node->as<LabelStmtNodeData>();
+    
+    // Record that this label is defined
+    if (defined_labels.find(data.label) != defined_labels.end()) {
+        reporter.report(DiagnosticSeverity::Error, 
+            "Label '" + data.label + "' already defined", 
+            node->range);
+    } else {
+        defined_labels.insert(data.label);
+    }
+    
+    // Analyze the labeled statement
+    if (data.statement) {
+        analyze_statement(data.statement);
+    }
+}
+
+// IR Generation Methods
+std::string SemanticAnalyzer::generate_ir_for_expression(const AstNodePtr &expr) {
+    if (!expr) return "";
+    
+    switch (expr->kind) {
+        case AstNodeKind::BinaryExpr:
+            return generate_ir_for_binary_expr(expr);
+        case AstNodeKind::UnaryExpr:
+            return generate_ir_for_unary_expr(expr);
+        case AstNodeKind::AssignmentExpr:
+            return generate_ir_for_assignment_expr(expr);
+        case AstNodeKind::IdentifierExpr:
+            return generate_ir_for_identifier_expr(expr);
+        case AstNodeKind::LiteralExpr:
+            return generate_ir_for_literal_expr(expr);
+        default:
+            return ""; // Not implemented yet
+    }
+}
+
+std::string SemanticAnalyzer::generate_ir_for_literal_expr(const AstNodePtr &expr) {
+    auto &data = expr->as<LiteralExprNodeData>();
+    return data.lexeme; // Return the literal value directly
+}
+
+std::string SemanticAnalyzer::generate_ir_for_identifier_expr(const AstNodePtr &expr) {
+    auto &data = expr->as<IdentifierExprNodeData>();
+    // Return scoped variable name
+    return get_scoped_variable_name(data.name, data.symbol);
+}
+
+std::string SemanticAnalyzer::generate_ir_for_binary_expr(const AstNodePtr &expr) {
+    auto &data = expr->as<BinaryExprNodeData>();
+    
+    // Generate IR for operands
+    std::string left_result = generate_ir_for_expression(data.lhs);
+    std::string right_result = generate_ir_for_expression(data.rhs);
+    
+    // Generate a temporary for the result
+    std::string temp = ir_gen.new_temp();
+    
+    // Map C operators to IR opcodes
+    IROpcode opcode;
+    if (data.op == "+") opcode = IROpcode::ADD;
+    else if (data.op == "-") opcode = IROpcode::SUB;
+    else if (data.op == "*") opcode = IROpcode::MUL;
+    else if (data.op == "/") opcode = IROpcode::DIV;
+    else if (data.op == "%") opcode = IROpcode::MOD;
+    else if (data.op == "&&") opcode = IROpcode::AND;
+    else if (data.op == "||") opcode = IROpcode::OR;
+    else if (data.op == "&") opcode = IROpcode::BIT_AND;
+    else if (data.op == "|") opcode = IROpcode::BIT_OR;
+    else if (data.op == "^") opcode = IROpcode::BIT_XOR;
+    else if (data.op == "<<") opcode = IROpcode::LEFT_SHIFT;
+    else if (data.op == ">>") opcode = IROpcode::RIGHT_SHIFT;
+    else if (data.op == "==") opcode = IROpcode::EQ;
+    else if (data.op == "!=") opcode = IROpcode::NE;
+    else if (data.op == "<") opcode = IROpcode::LT;
+    else if (data.op == "<=") opcode = IROpcode::LE;
+    else if (data.op == ">") opcode = IROpcode::GT;
+    else if (data.op == ">=") opcode = IROpcode::GE;
+    else {
+        // Unknown operator, use ADD as fallback
+        opcode = IROpcode::ADD;
+    }
+    
+    // Emit the instruction
+    ir_gen.emit(opcode, temp, left_result, right_result, "", expr->range.begin.line);
+    
+    return temp;
+}
+
+std::string SemanticAnalyzer::generate_ir_for_unary_expr(const AstNodePtr &expr) {
+    auto &data = expr->as<UnaryExprNodeData>();
+    
+    // Generate IR for operand
+    std::string operand_result = generate_ir_for_expression(data.operand);
+    
+    // Generate a temporary for the result
+    std::string temp = ir_gen.new_temp();
+    
+    // Map C operators to IR opcodes
+    if (data.op == "-") {
+        // Unary minus: temp = SUB 0, operand
+        ir_gen.emit(IROpcode::SUB, temp, "0", operand_result);
+    } else if (data.op == "+") {
+        // Unary plus: temp = ADD 0, operand
+        ir_gen.emit(IROpcode::ADD, temp, "0", operand_result);
+    } else if (data.op == "!") {
+        // Logical not
+        ir_gen.emit(IROpcode::NOT, temp, operand_result);
+    } else if (data.op == "~") {
+        // Bitwise not
+        ir_gen.emit(IROpcode::BIT_NOT, temp, operand_result);
+    } else {
+        // Unknown operator, use ASSIGN as fallback
+        ir_gen.emit(IROpcode::ASSIGN, temp, operand_result);
+    }
+    
+    return temp;
+}
+
+std::string SemanticAnalyzer::generate_ir_for_assignment_expr(const AstNodePtr &expr) {
+    auto &data = expr->as<AssignmentExprNodeData>();
+    
+    // Generate IR for right-hand side
+    std::string rhs_result = generate_ir_for_expression(data.rhs);
+    
+    // For now, assume LHS is an identifier
+    if (data.lhs && data.lhs->kind == AstNodeKind::IdentifierExpr) {
+        auto &lhs_data = data.lhs->as<IdentifierExprNodeData>();
+        
+        // Get scoped variable name for assignment
+        std::string scoped_name = get_scoped_variable_name(lhs_data.name, lhs_data.symbol);
+        
+        // Simple assignment: var = rhs
+        ir_gen.emit(IROpcode::ASSIGN, scoped_name, rhs_result, "", "", expr->range.begin.line);
+        
+        return scoped_name; // Assignment returns the assigned value
+    }
+    
+    return ""; // Couldn't generate IR for this assignment
+}
+
+std::string SemanticAnalyzer::generate_simple_expression_string(const AstNodePtr &expr) {
+    if (!expr) return "";
+    
+    switch (expr->kind) {
+        case AstNodeKind::LiteralExpr: {
+            auto &data = expr->as<LiteralExprNodeData>();
+            return data.lexeme;
+        }
+        case AstNodeKind::IdentifierExpr: {
+            auto &data = expr->as<IdentifierExprNodeData>();
+            return data.name;
+        }
+        case AstNodeKind::BinaryExpr: {
+            auto &data = expr->as<BinaryExprNodeData>();
+            std::string left = generate_simple_expression_string(data.lhs);
+            std::string right = generate_simple_expression_string(data.rhs);
+            return left + " " + data.op + " " + right;
+        }
+        case AstNodeKind::UnaryExpr: {
+            auto &data = expr->as<UnaryExprNodeData>();
+            std::string operand = generate_simple_expression_string(data.operand);
+            return data.op + operand;
+        }
+        default:
+            return "";
+    }
+}
+
+std::string SemanticAnalyzer::get_scoped_variable_name(const std::string& name, const SymbolWeakPtr& symbol) {
+    if (auto sym = symbol.lock()) {
+        // Create scoped name: variable_scopeLevel
+        return name + "_" + std::to_string(sym->scope_level);
+    }
+    // Fallback to original name if symbol is not available
+    return name;
 }

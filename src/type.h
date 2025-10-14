@@ -51,7 +51,6 @@ enum class BuiltinTypeKind {
     UnsignedLong,
     LongLong,
     UnsignedLongLong,
-    Float,
     Double,
     LongDouble
 };
