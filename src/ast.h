@@ -1,367 +1,283 @@
-#pragma once
+#ifndef AST_H
+#define AST_H
 
-#include <memory>
-#include <optional>
 #include <string>
-#include <utility>
-#include <variant>
 #include <vector>
+#include "tac.h"
 
-#include "type.h"
+// ============================================================================
+// AST Header - Phase 1 Compiler
+// ============================================================================
+// Abstract Syntax Tree node definitions for:
+//   - PrimaryExpression: identifiers, constants (int, char, double)
+//   - BinaryExpression: arithmetic, bitwise, comparison operators
+//   - UnaryExpression: prefix inc/dec, negation, bitwise NOT
+//   - AssignmentExpression: variable = expression
+//   - VariableDeclaration: type var = initializer
+//
+// Each node tracks:
+//   - Type information (for type checking)
+//   - TAC code (instruction list)
+//   - TAC result (operand where result is stored)
+//   - Location (line, column for error messages)
+// ============================================================================
 
-struct Symbol;
+// Forward declarations
+class Type;
 
-// Shared pointer aliases to keep ownership semantics explicit
-using AstNodePtr = std::shared_ptr<struct AstNode>;
-using SymbolWeakPtr = std::weak_ptr<Symbol>;
+// ============================================================================
+// Base AST Node
+// ============================================================================
 
-struct SourceLocation {
-    int line = 0;
-    int column = 0;
+class ASTNode
+{
+public:
+    int line_no;
+    int column_no;
+
+    ASTNode() : line_no(0), column_no(0) {}
+    virtual ~ASTNode() {}
+
+    virtual std::string to_string() const = 0;
 };
 
-struct SourceRange {
-    SourceLocation begin;
-    SourceLocation end;
+// ============================================================================
+// Expression Nodes (All expressions inherit from Expression base class)
+// ============================================================================
+
+class Expression : public ASTNode
+{
+public:
+    Type *type;                         // Type of expression result
+    TACOperand *result;                 // TAC operand for result
+    std::vector<TACInstruction *> code; // TAC code generated
+
+    // For boolean expressions (backpatching)
+    InstructionList truelist;  // List of instructions to backpatch when true
+    InstructionList falselist; // List of instructions to backpatch when false
+
+    Expression() : type(nullptr), result(nullptr) {}
+    virtual ~Expression();
+
+    // Generate TAC for this expression
+    virtual void generate_tac() = 0;
 };
 
-enum class AstNodeKind {
-    TranslationUnit,
-    FunctionDecl,
-    VariableDecl,
-    ParameterDecl,
-    CompoundStmt,
-    IfStmt,
-    WhileStmt,
-    ForStmt,
-    BreakStmt,
-    ContinueStmt,
-    ReturnStmt,
-    GotoStmt,
-    LabelStmt,
-    ExpressionStmt,
-    BinaryExpr,
-    UnaryExpr,
-    CallExpr,
-    IdentifierExpr,
-    LiteralExpr,
-    AssignmentExpr,
-    ConditionalExpr,
-    CastExpr,
-    SubscriptExpr,
-    InitializerList,
-    TypeSpecifier,
-    Declarator,
-    StructDecl,
-    UnionDecl,
-    EnumDecl,
-    MemberDecl,
-    EnumeratorDecl,
-    MemberAccessExpr,
+// Primary Expression - identifiers, constants, (expr)
+class PrimaryExpression : public Expression
+{
+public:
+    enum PrimaryType
+    {
+        PRIM_IDENTIFIER,
+        PRIM_INT_CONSTANT,
+        PRIM_CHAR_CONSTANT,
+        PRIM_FLOAT_CONSTANT,
+        PRIM_PAREN_EXPR
+    };
+
+    PrimaryType prim_type;
+    std::string name;   // For PRIM_IDENTIFIER
+    int int_value;      // For PRIM_INT_CONSTANT
+    char char_value;    // For PRIM_CHAR_CONSTANT
+    double float_value; // For PRIM_FLOAT_CONSTANT (stores both float and double)
+    Expression *expr;   // For PRIM_PAREN_EXPR
+
+    PrimaryExpression(const std::string &id_name); // Identifier
+    PrimaryExpression(int value);                  // Int constant
+    PrimaryExpression(char value);                 // Char constant
+    PrimaryExpression(double value);               // Float/double constant
+    PrimaryExpression(Expression *e);              // Parenthesized
+    virtual ~PrimaryExpression();
+
+    std::string to_string() const override;
+    void generate_tac() override;
 };
 
-enum class LiteralKind {
-    Integer,
-    Double,
-    Character,
-    Boolean,
-    String,
-    Null,
-    Nullptr,
+// Binary Expression - left op right
+class BinaryExpression : public Expression
+{
+public:
+    TACOp op;
+    Expression *left;
+    Expression *right;
+
+    BinaryExpression(Expression *l, TACOp operation, Expression *r);
+    virtual ~BinaryExpression();
+
+    std::string to_string() const override;
+    void generate_tac() override;
 };
 
-enum class AccessSpecifier {
-    Public,
-    Private,
-    Protected
+// Unary Expression - op expr
+class UnaryExpression : public Expression
+{
+public:
+    TACOp op;
+    Expression *expr;
+
+    UnaryExpression(TACOp operation, Expression *e);
+    virtual ~UnaryExpression();
+
+    std::string to_string() const override;
+    void generate_tac() override;
 };
 
-struct TranslationUnitNodeData {
-    std::vector<AstNodePtr> declarations;
+// Assignment Expression - lhs = rhs
+class AssignmentExpression : public Expression
+{
+public:
+    std::string lhs_name; // Variable name
+    Expression *rhs;      // Right-hand side expression
+
+    AssignmentExpression(const std::string &var, Expression *rhs_expr);
+    virtual ~AssignmentExpression();
+
+    std::string to_string() const override;
+    void generate_tac() override;
 };
 
-struct FunctionDeclNodeData {
-    std::string name;
-    AstNodePtr return_type; // may be null for implicit int during parsing
-    std::vector<AstNodePtr> parameters;
-    AstNodePtr body;
-    bool is_definition = false;
-    bool is_variadic = false;
-    SymbolWeakPtr symbol;
+// ============================================================================
+// Statement Nodes
+// ============================================================================
+
+class Statement : public ASTNode
+{
+public:
+    std::vector<TACInstruction *> code; // TAC generated for this statement
+    InstructionList nextlist;           // List of gotos to be backpatched to next statement
+
+    Statement() {}
+    virtual ~Statement();
+
+    virtual void generate_tac() = 0;
 };
 
-struct VariableDeclNodeData {
-    std::string name;
-    AstNodePtr type_expr;
-    AstNodePtr initializer;
-    bool is_typedef = false;
-    bool is_static = false;
-    bool is_extern = false;
-    int pointer_levels = 0; // 0=not pointer, 1=*, 2=**, etc.
-    bool is_array = false;
-    std::vector<int> array_dimensions; // Multiple dimensions, 0 means unsized
-    SymbolWeakPtr symbol;
+// Marker - captures current instruction position (for M non-terminal)
+class Marker
+{
+public:
+    int instr; // Instruction number where marker was placed
+
+    Marker() : instr(tacGen.nextinstr()) {}
 };
 
-struct ParameterDeclNodeData {
-    std::string name;
-    AstNodePtr type_expr;
-    bool is_variadic = false;
-    int pointer_levels = 0; // Track pointer levels like in variables
-    bool is_array = false;
-    std::vector<int> array_dimensions; // Track array dimensions
-    SymbolWeakPtr symbol;
+// If Statement (if-else)
+class IfStatement : public Statement
+{
+public:
+    Expression *condition;
+    Statement *then_stmt;
+    Statement *else_stmt; // nullptr if no else clause
+
+    IfStatement(Expression *cond, Statement *then_s, Statement *else_s = nullptr);
+    virtual ~IfStatement();
+
+    std::string to_string() const override;
+    void generate_tac() override;
 };
 
-struct CompoundStmtNodeData {
-    std::vector<AstNodePtr> statements;
+// While Statement
+class WhileStatement : public Statement
+{
+public:
+    Expression *condition;
+    Statement *body;
+
+    WhileStatement(Expression *cond, Statement *body_stmt);
+    virtual ~WhileStatement();
+
+    std::string to_string() const override;
+    void generate_tac() override;
 };
 
-struct IfStmtNodeData {
-    AstNodePtr condition;
-    AstNodePtr then_branch;
-    AstNodePtr else_branch;
+// Expression Statement (expression followed by semicolon)
+class ExpressionStatement : public Statement
+{
+public:
+    Expression *expr; // nullptr for empty statement (just semicolon)
+
+    ExpressionStatement(Expression *e = nullptr);
+    virtual ~ExpressionStatement();
+
+    std::string to_string() const override;
+    void generate_tac() override;
 };
 
-struct WhileStmtNodeData {
-    AstNodePtr condition;
-    AstNodePtr body;
-    bool is_do_while = false;
+// Compound Statement (block with multiple statements)
+class CompoundStatement : public Statement
+{
+public:
+    std::vector<Statement *> statements;
+
+    CompoundStatement();
+    virtual ~CompoundStatement();
+
+    void add_statement(Statement *stmt);
+    std::string to_string() const override;
+    void generate_tac() override;
 };
 
-struct ForStmtNodeData {
-    AstNodePtr init;
-    AstNodePtr condition;
-    AstNodePtr increment;
-    AstNodePtr body;
+// ============================================================================
+// Declaration Nodes
+// ============================================================================
+
+class Declaration : public ASTNode
+{
+public:
+    Type *decl_type;
+    std::vector<TACInstruction *> code; // TAC generated for initializers
+
+    Declaration() : decl_type(nullptr) {}
+    virtual ~Declaration();
+
+    virtual void generate_tac() = 0;
 };
 
-struct ReturnStmtNodeData {
-    AstNodePtr expression; // may be null for void return
+// Simple variable declaration
+class VariableDeclaration : public Declaration
+{
+public:
+    std::string var_name;
+    Expression *initializer; // nullptr if no initializer
+
+    VariableDeclaration(Type *t, const std::string &name, Expression *init = nullptr);
+    virtual ~VariableDeclaration();
+
+    std::string to_string() const override;
+    void generate_tac() override;
 };
 
-struct BreakStmtNodeData {
-    // No additional data needed
-};
+// ============================================================================
+// Helper Functions
+// ============================================================================
 
-struct ContinueStmtNodeData {
-    // No additional data needed  
-};
+// Create expression nodes
+PrimaryExpression *create_primary_expression(const std::string &name);
+PrimaryExpression *create_primary_expression(int value);
+PrimaryExpression *create_primary_expression(char value);
+PrimaryExpression *create_primary_expression(double value);
 
-struct GotoStmtNodeData {
-    std::string label;
-};
+// Overloaded versions with location info
+PrimaryExpression *create_primary_expression(const std::string &name, int line, int col);
+PrimaryExpression *create_primary_expression(int value, int line, int col);
+PrimaryExpression *create_primary_expression(char value, int line, int col);
+PrimaryExpression *create_primary_expression(double value, int line, int col);
 
-struct LabelStmtNodeData {
-    std::string label;
-    AstNodePtr statement;
-};
+PrimaryExpression *create_paren_expression(Expression *expr);
 
-struct ExpressionStmtNodeData {
-    AstNodePtr expression;
-};
+BinaryExpression *create_binary_expression(Expression *left, TACOp op, Expression *right);
+UnaryExpression *create_unary_expression(TACOp op, Expression *expr);
+AssignmentExpression *create_assignment_expression(const std::string &var, Expression *rhs);
 
-struct BinaryExprNodeData {
-    std::string op;
-    AstNodePtr lhs;
-    AstNodePtr rhs;
-};
+// Create declaration nodes
+VariableDeclaration *create_variable_declaration(Type *type, const std::string &name,
+                                                 Expression *init = nullptr);
 
-struct UnaryExprNodeData {
-    std::string op;
-    AstNodePtr operand;
-    bool is_prefix = true;
-};
+// Create statement nodes
+IfStatement *create_if_statement(Expression *cond, Statement *then_stmt, Statement *else_stmt = nullptr);
+WhileStatement *create_while_statement(Expression *cond, Statement *body);
+ExpressionStatement *create_expression_statement(Expression *expr = nullptr);
+CompoundStatement *create_compound_statement();
 
-struct CallExprNodeData {
-    AstNodePtr callee;
-    std::vector<AstNodePtr> arguments;
-};
-
-struct IdentifierExprNodeData {
-    std::string name;
-    SymbolWeakPtr symbol; // resolves during semantic analysis
-};
-
-struct LiteralExprNodeData {
-    LiteralKind literal_kind = LiteralKind::Integer;
-    std::string lexeme;
-};
-
-struct AssignmentExprNodeData {
-    std::string op; // '=', "+=", etc.
-    AstNodePtr lhs;
-    AstNodePtr rhs;
-};
-
-struct ConditionalExprNodeData {
-    AstNodePtr condition;
-    AstNodePtr then_expr;
-    AstNodePtr else_expr;
-};
-
-struct CastExprNodeData {
-    AstNodePtr target_type;
-    AstNodePtr expression;
-};
-
-struct SubscriptExprNodeData {
-    AstNodePtr array;
-    AstNodePtr index;
-};
-
-struct InitializerListNodeData {
-    std::vector<AstNodePtr> elements;
-};
-
-enum class TypeSpecifierKind {
-    Builtin,
-    Identifier,
-    Struct,
-    Union,
-    Enum,
-    Pointer,
-    Array,
-    Function,
-};
-
-struct TypeSpecifierNodeData {
-    TypeSpecifierKind kind = TypeSpecifierKind::Builtin;
-    std::string name; // for builtin/identifier tags
-    std::vector<AstNodePtr> children; // element type, parameters, etc.
-    TypeQualifierSet qualifiers;
-    bool is_signed = false;
-    bool is_unsigned = false;
-    bool is_short = false;
-    bool is_long = false;
-    bool is_long_long = false;
-};
-
-enum class DeclaratorKind {
-    Identifier,
-    Pointer,
-    Array,
-    Function,
-};
-
-struct DeclaratorNodeData {
-    DeclaratorKind kind = DeclaratorKind::Identifier;
-    std::string name; // present for identifier declarators
-    std::vector<TypeQualifierSet> pointer_qualifiers; // for pointer chains
-    std::vector<AstNodePtr> parameters; // for function declarators
-    AstNodePtr return_type; // for function declarators (pointing back to declaration)
-    AstNodePtr element_type; // for arrays/pointers chains
-    std::optional<size_t> array_size; // nullopt for unsized arrays
-};
-
-struct StructDeclNodeData {
-    std::string name; // may be empty for anonymous structs
-    std::vector<AstNodePtr> members; // MemberDecl nodes
-    bool is_definition = false; // true if has members, false if just forward declaration
-    SymbolWeakPtr symbol;
-};
-
-struct UnionDeclNodeData {
-    std::string name; // may be empty for anonymous unions
-    std::vector<AstNodePtr> members; // MemberDecl nodes
-    bool is_definition = false;
-    SymbolWeakPtr symbol;
-};
-
-struct EnumDeclNodeData {
-    std::string name; // may be empty for anonymous enums
-    std::vector<AstNodePtr> enumerators; // EnumeratorDecl nodes
-    bool is_definition = false;
-    SymbolWeakPtr symbol;
-};
-
-struct MemberDeclNodeData {
-    std::string name;
-    AstNodePtr type_expr;
-    int pointer_levels = 0;
-    bool is_array = false;
-    std::vector<int> array_dimensions;
-    int bit_field_width = -1; // -1 means not a bit field
-    AccessSpecifier access = AccessSpecifier::Public; // Default to public for structs, private for classes
-    SymbolWeakPtr symbol;
-};
-
-struct EnumeratorDeclNodeData {
-    std::string name;
-    AstNodePtr value_expr; // may be null for auto-increment
-    SymbolWeakPtr symbol;
-};
-
-struct MemberAccessExprNodeData {
-    AstNodePtr object; // the struct/union instance
-    std::string member_name;
-    bool is_arrow = false; // true for ->, false for .
-    SymbolWeakPtr member_symbol; // resolves to the member declaration
-};
-
-using AstNodePayload = std::variant<
-    std::monostate,
-    TranslationUnitNodeData,
-    FunctionDeclNodeData,
-    VariableDeclNodeData,
-    ParameterDeclNodeData,
-    CompoundStmtNodeData,
-    IfStmtNodeData,
-    WhileStmtNodeData,
-    ForStmtNodeData,
-    ReturnStmtNodeData,
-    BreakStmtNodeData,
-    ContinueStmtNodeData,
-    GotoStmtNodeData,
-    LabelStmtNodeData,
-    ExpressionStmtNodeData,
-    BinaryExprNodeData,
-    UnaryExprNodeData,
-    CallExprNodeData,
-    IdentifierExprNodeData,
-    LiteralExprNodeData,
-    AssignmentExprNodeData,
-    ConditionalExprNodeData,
-    CastExprNodeData,
-    SubscriptExprNodeData,
-    InitializerListNodeData,
-    TypeSpecifierNodeData,
-    DeclaratorNodeData,
-    StructDeclNodeData,
-    UnionDeclNodeData,
-    EnumDeclNodeData,
-    MemberDeclNodeData,
-    EnumeratorDeclNodeData,
-    MemberAccessExprNodeData
->;
-
-struct AstNode {
-    AstNodeKind kind = AstNodeKind::TranslationUnit;
-    SourceRange range;
-    TypePtr inferred_type; // Filled during semantic/type analysis
-    int scope_level = -1;   // set by the parser/semantic passes
-    AstNodePayload payload;
-
-    AstNode() = default;
-    explicit AstNode(AstNodeKind k) : kind(k) {}
-
-    template <typename T>
-    T& as() {
-        return std::get<T>(payload);
-    }
-
-    template <typename T>
-    const T& as() const {
-        return std::get<T>(payload);
-    }
-};
-
-inline AstNodePtr make_node(AstNodeKind kind) {
-    return std::make_shared<AstNode>(kind);
-}
-
-inline AstNodePtr make_node(AstNodeKind kind, AstNodePayload payload) {
-    auto node = std::make_shared<AstNode>(kind);
-    node->payload = std::move(payload);
-    return node;
-}
+#endif // AST_H

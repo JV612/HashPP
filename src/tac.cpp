@@ -1,0 +1,276 @@
+#include "tac.h"
+#include <iostream>
+#include <sstream>
+
+using namespace std;
+
+// Global TAC generator
+TACGenerator tacGen;
+
+// ============================================================================
+// TACOperand Implementation
+// ============================================================================
+
+string TACOperand::to_string() const
+{
+    if (is_empty())
+        return "";
+    return name;
+}
+
+// ============================================================================
+// TACInstruction Implementation
+// ============================================================================
+
+string TACInstruction::to_string() const
+{
+    stringstream ss;
+
+    switch (op)
+    {
+    case TAC_ASSIGN:
+        ss << result.to_string() << " = " << arg1.to_string();
+        break;
+
+    case TAC_ADD:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " + " << arg2.to_string();
+        break;
+
+    case TAC_SUB:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " - " << arg2.to_string();
+        break;
+
+    case TAC_MUL:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " * " << arg2.to_string();
+        break;
+
+    case TAC_DIV:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " / " << arg2.to_string();
+        break;
+
+    case TAC_MOD:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " % " << arg2.to_string();
+        break;
+
+    case TAC_UMINUS:
+        ss << result.to_string() << " = -" << arg1.to_string();
+        break;
+
+    case TAC_UPLUS:
+        ss << result.to_string() << " = +" << arg1.to_string();
+        break;
+
+    case TAC_PRE_INC:
+        ss << result.to_string() << " = " << result.to_string() << " + 1";
+        break;
+
+    case TAC_PRE_DEC:
+        ss << result.to_string() << " = " << result.to_string() << " - 1";
+        break;
+
+    case TAC_BITWISE_AND:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " & " << arg2.to_string();
+        break;
+
+    case TAC_BITWISE_OR:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " | " << arg2.to_string();
+        break;
+
+    case TAC_BITWISE_XOR:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " ^ " << arg2.to_string();
+        break;
+
+    case TAC_BITWISE_NOT:
+        ss << result.to_string() << " = ~" << arg1.to_string();
+        break;
+
+    case TAC_LEFT_SHIFT:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " << " << arg2.to_string();
+        break;
+
+    case TAC_RIGHT_SHIFT:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " >> " << arg2.to_string();
+        break;
+
+    case TAC_LT:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " < " << arg2.to_string();
+        break;
+
+    case TAC_GT:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " > " << arg2.to_string();
+        break;
+
+    case TAC_LE:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " <= " << arg2.to_string();
+        break;
+
+    case TAC_GE:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " >= " << arg2.to_string();
+        break;
+
+    case TAC_EQ:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " == " << arg2.to_string();
+        break;
+
+    case TAC_NE:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " != " << arg2.to_string();
+        break;
+
+    case TAC_LOGICAL_AND:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " && " << arg2.to_string();
+        break;
+
+    case TAC_LOGICAL_OR:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " || " << arg2.to_string();
+        break;
+
+    case TAC_LOGICAL_NOT:
+        ss << result.to_string() << " = !" << arg1.to_string();
+        break;
+
+    // Control Flow
+    case TAC_LABEL:
+        ss << result.to_string() << ":";
+        break;
+
+    case TAC_GOTO:
+        if (target_line >= 0)
+            ss << "goto " << target_line;
+        else
+            ss << "goto [BACKPATCH]";
+        break;
+
+    case TAC_IF_GOTO:
+        if (target_line >= 0)
+            ss << "if " << arg1.to_string() << " goto " << target_line;
+        else
+            ss << "if " << arg1.to_string() << " goto [BACKPATCH]";
+        break;
+
+    case TAC_IF_FALSE_GOTO:
+        if (target_line >= 0)
+            ss << "ifFalse " << arg1.to_string() << " goto " << target_line;
+        else
+            ss << "ifFalse " << arg1.to_string() << " goto [BACKPATCH]";
+        break;
+    }
+
+    return ss.str();
+}
+
+// ============================================================================
+// TACGenerator Implementation
+// ============================================================================
+
+TACGenerator::~TACGenerator()
+{
+    clear();
+}
+
+TACOperand TACGenerator::newTemp()
+{
+    stringstream ss;
+    ss << "#t" << temp_counter++;
+    return TACOperand(TACOperand::OPERAND_TEMP, ss.str());
+}
+
+TACOperand TACGenerator::newLabel()
+{
+    stringstream ss;
+    ss << "L" << label_counter++;
+    return TACOperand(TACOperand::OPERAND_LABEL, ss.str());
+}
+
+int TACGenerator::emit(TACOp op, TACOperand result, TACOperand arg1, TACOperand arg2)
+{
+    TACInstruction *instr = new TACInstruction(op, result, arg1, arg2);
+    instr->line_number = code.size();
+    code.push_back(instr);
+
+    // Print as we generate (for debugging)
+    cout << "[TAC] " << instr->line_number << ": " << instr->to_string() << endl;
+
+    return instr->line_number;
+}
+
+void TACGenerator::backpatch(InstructionList list, int target)
+{
+    for (int index : list)
+    {
+        if (index >= 0 && index < (int)code.size())
+        {
+            code[index]->target_line = target;
+        }
+    }
+}
+
+void TACGenerator::print() const
+{
+    if (code.empty())
+    {
+        cout << "\n[No TAC generated]\n"
+             << endl;
+        return;
+    }
+
+    cout << "\n========== THREE-ADDRESS CODE ==========\n";
+    for (const TACInstruction *instr : code)
+    {
+        // Print line number with padding for alignment
+        cout << instr->line_number << ": " << instr->to_string() << endl;
+    }
+    cout << "========================================\n"
+         << endl;
+}
+
+void TACGenerator::clear()
+{
+    for (TACInstruction *instr : code)
+    {
+        delete instr;
+    }
+    code.clear();
+    temp_counter = 0;
+    label_counter = 0;
+}
+
+// ============================================================================
+// Backpatching Helper Functions
+// ============================================================================
+
+InstructionList makelist(int index)
+{
+    InstructionList list;
+    list.push_back(index);
+    return list;
+}
+
+InstructionList merge(InstructionList list1, InstructionList list2)
+{
+    InstructionList result = list1;
+    result.insert(result.end(), list2.begin(), list2.end());
+    return result;
+}
+
+void backpatch(InstructionList list, int target)
+{
+    tacGen.backpatch(list, target);
+}

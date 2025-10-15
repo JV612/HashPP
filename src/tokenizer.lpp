@@ -1,14 +1,31 @@
 %option noyywrap
 %{
+// ============================================================================
+// PHASE 1 WITH AST: Enhanced tokenizer with AST and TAC support
+// ============================================================================
+
+// ============================================================================
+// *** NEW: AST and TAC Headers Added ***
+// These headers provide AST node classes and TAC generation capabilities
+// Include order matters: symbol_table → tac → ast → parser.tab.h
+// ============================================================================
+#include "symbol_table.h"   // NEW: Type system and symbol management
+#include "tac.h"            // NEW: Three-Address Code generation
+#include "ast.h"            // NEW: Abstract Syntax Tree node classes
+
 #include "ansic.tab.h"  
+
 #include <string.h>
 #include <string>
 #include <stdlib.h>
 #include <vector>
-#include "symbol_table.h"
 using namespace std;
 
-extern SymbolTable* proper_symbol_table;
+// ============================================================================
+// NOTE: The code below is from your original tokenizer.lpp
+// It handles token tracking and type management
+// The NEW includes above enable AST creation in the parser
+// ============================================================================
 
 struct TokenEntry {
     int line;
@@ -54,6 +71,7 @@ void types_init(void) {
     auto &g = type_scopes.back();
     g["int"] = TYPE_KIND_BUILTIN;
     g["char"] = TYPE_KIND_BUILTIN;
+    g["float"] = TYPE_KIND_BUILTIN;
     g["double"] = TYPE_KIND_BUILTIN;
     g["void"] = TYPE_KIND_BUILTIN;
     g["bool"] = TYPE_KIND_BUILTIN;
@@ -65,21 +83,11 @@ void types_free(void) {
 
 void types_enter_scope(void) {
     type_scopes.emplace_back();
-    
-    // Also handle proper symbol table scope
-    if (proper_symbol_table) {
-        proper_symbol_table->enter_scope();
-    }
 }
 
 void types_leave_scope(void) {
     if (!type_scopes.empty()) type_scopes.pop_back();
     if (type_scopes.empty()) type_scopes.emplace_back(); 
-    
-    // Also handle proper symbol table scope
-    if (proper_symbol_table) {
-        proper_symbol_table->exit_scope();
-    }
 }
 
 void types_add_builtin(const char *name) {
@@ -221,8 +229,8 @@ ESCAPE      \\[abfnrtv0\\'\\"]
 
 (({DIGIT}+"."{DIGIT}*)|("."{DIGIT}+)) {
     yylval.fval = atof(yytext);
-    add_token(yylineno, yytext, "DOUBLE_CONSTANT");
-    return DOUBLE_CONSTANT;
+    add_token(yylineno, yytext, "FLOAT_CONSTANT");
+    return FLOAT_CONSTANT;
 }
 
 "." {
@@ -237,7 +245,28 @@ ESCAPE      \\[abfnrtv0\\'\\"]
 }
 
 \'([^\\'\n]|{ESCAPE})\' {
-    yylval.cval = yytext[1];
+    char result;
+    if (yytext[1] == '\\') {
+        // Escape sequence
+        switch(yytext[2]) {
+            case 'a':  result = '\a'; break;
+            case 'b':  result = '\b'; break;
+            case 'f':  result = '\f'; break;
+            case 'n':  result = '\n'; break;
+            case 'r':  result = '\r'; break;
+            case 't':  result = '\t'; break;
+            case 'v':  result = '\v'; break;
+            case '0':  result = '\0'; break;
+            case '\\': result = '\\'; break;
+            case '\'': result = '\''; break;
+            case '\"': result = '\"'; break;
+            default:   result = yytext[2]; break;
+        }
+        yylval.cval = result;
+    } else {
+        // Regular character
+        yylval.cval = yytext[1];
+    }
     add_token(yylineno, yytext, "CHAR_CONSTANT");
     return CHAR_CONSTANT;
 }
@@ -249,20 +278,6 @@ ESCAPE      \\[abfnrtv0\\'\\"]
 }
 
 {ID} {
-    // If an ordinary identifier exists in the current scope, it shadows any
-    // typedef/tag names from outer scopes. In that case, return IDENTIFIER.
-    if (proper_symbol_table) {
-        auto sym = proper_symbol_table->lookup_ident_current(yytext);
-        if (sym) {
-            yylval.str = strdup(yytext);
-            // Return TYPE_NAME for type-like symbols (structs, classes, typedefs)
-            if (sym->kind == SymbolKind::StructTag || sym->kind == SymbolKind::TypedefName) {
-                return TYPE_NAME;
-            }
-            return IDENTIFIER;
-        }
-    }
-
     if (types_is_known(yytext)) {
         yylval.str = strdup(yytext);
         return TYPE_NAME;

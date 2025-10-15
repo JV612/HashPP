@@ -1,226 +1,274 @@
-// symbol_table.cpp
 #include "symbol_table.h"
-#include <sstream>
+#include <iostream>
+#include <iomanip>
 
-SymbolTable::SymbolTable(ErrorCb err_cb) : error_cb(err_cb) {
-    stack.clear();
-    // start with global scope level 0
-    stack.emplace_back();
-    stack.back().level = 0;
-    stack.back().is_function_level = false;
+using namespace std;
+
+// Global symbol table instance
+SymbolTable symbolTable;
+
+// ============================================================================
+// Type Implementation
+// ============================================================================
+
+string Type::to_string() const
+{
+    string result;
+
+    if (is_const)
+        result = "const ";
+
+    switch (base_type)
+    {
+    case TYPE_INT:
+        result += "int";
+        break;
+    case TYPE_FLOAT:
+        result += "float";
+        break;
+    case TYPE_CHAR:
+        result += "char";
+        break;
+    case TYPE_VOID:
+        result += "void";
+        break;
+    case TYPE_ERROR:
+        result += "error";
+        break;
+    }
+
+    for (int i = 0; i < pointer_level; i++)
+    {
+        result += "*";
+    }
+
+    return result;
 }
 
-SymbolTable::~SymbolTable() {
-    stack.clear();
+int Type::get_size() const
+{
+    // Pointers are 8 bytes (64-bit)
+    if (pointer_level > 0)
+        return 8;
+
+    switch (base_type)
+    {
+    case TYPE_INT:
+        return 4;
+    case TYPE_FLOAT:
+        return 4;
+    case TYPE_CHAR:
+        return 1;
+    case TYPE_VOID:
+        return 0;
+    case TYPE_ERROR:
+        return 0;
+    }
+    return 0;
 }
 
-void SymbolTable::enter_scope(bool is_function_level) {
-    Scope s;
-    s.level = (int)stack.size();
-    s.is_function_level = is_function_level;
-    stack.push_back(std::move(s));
+// ============================================================================
+// Phase 1: Type Checking Helper Methods
+// ============================================================================
+
+/**
+ * Check if this type can be used in arithmetic operations
+ * Returns true for int, float, and char (char promotes to int)
+ */
+bool Type::is_numeric() const
+{
+    return base_type == TYPE_INT ||
+           base_type == TYPE_FLOAT ||
+           base_type == TYPE_CHAR;
 }
 
-void SymbolTable::exit_scope() {
-    if (stack.size() <= 1) {
-        report_error("[symbol_table] attempt to pop global scope ignored");
+/**
+ * Check if this type is an integer type (for modulo, bitwise ops)
+ * Returns true for int and char only (no floating point)
+ */
+bool Type::is_integer() const
+{
+    return base_type == TYPE_INT ||
+           base_type == TYPE_CHAR;
+}
+
+/**
+ * Check if this is an error type (for error propagation)
+ */
+bool Type::is_error() const
+{
+    return base_type == TYPE_ERROR;
+}
+
+/**
+ * Type promotion for binary operations
+ * Phase 1 rules: FLOAT > INT > CHAR
+ * This follows C's implicit conversion hierarchy
+ */
+Type Type::promote_with(const Type &other) const
+{
+    // Error propagation: if either type is error, result is error
+    if (is_error() || other.is_error())
+    {
+        return Type(TYPE_ERROR);
+    }
+
+    // Float takes precedence over everything
+    if (base_type == TYPE_FLOAT || other.base_type == TYPE_FLOAT)
+    {
+        return Type(TYPE_FLOAT);
+    }
+
+    // Int takes precedence over char
+    if (base_type == TYPE_INT || other.base_type == TYPE_INT)
+    {
+        return Type(TYPE_INT);
+    }
+
+    // Both are char
+    return Type(TYPE_CHAR);
+}
+
+// ============================================================================
+// SymbolTable Implementation
+// ============================================================================
+
+SymbolTable::SymbolTable() : currentScope(0), currentOffset(0) {}
+
+SymbolTable::~SymbolTable()
+{
+    // Clean up all symbols
+    for (auto &pair : table)
+    {
+        for (Symbol *sym : pair.second)
+        {
+            delete sym;
+        }
+    }
+}
+
+void SymbolTable::insert(const string &name, Type type)
+{
+    // Check for redeclaration in current scope
+    auto it = table.find(name);
+    if (it != table.end())
+    {
+        for (Symbol *sym : it->second)
+        {
+            if (sym->scope == currentScope)
+            {
+                cerr << "Error: Redeclaration of '" << name
+                     << "' in scope " << currentScope << endl;
+                return;
+            }
+        }
+    }
+
+    // Create new symbol and add to front of list (most recent first)
+    Symbol *sym = new Symbol(name, type, currentScope, currentOffset);
+    table[name].push_front(sym);
+
+    // Update offset for next variable
+    currentOffset += type.get_size();
+
+    cout << "[Symbol Table] Inserted: " << name
+         << " (type: " << type.to_string()
+         << ", scope: " << currentScope
+         << ", offset: " << sym->offset << ")" << endl;
+}
+
+Symbol *SymbolTable::lookup(const string &name)
+{
+    auto it = table.find(name);
+    if (it == table.end())
+    {
+        return nullptr;
+    }
+
+    // Return the most recent symbol (first in list) that's in valid scope
+    for (Symbol *sym : it->second)
+    {
+        if (sym->scope <= currentScope)
+        {
+            return sym;
+        }
+    }
+
+    return nullptr;
+}
+
+void SymbolTable::enterScope()
+{
+    currentScope++;
+    cout << "[Symbol Table] Entered scope " << currentScope << endl;
+}
+
+void SymbolTable::exitScope()
+{
+    if (currentScope == 0)
+        return;
+
+    cout << "[Symbol Table] Exiting scope " << currentScope << endl;
+
+    // Remove all symbols from current scope
+    for (auto it = table.begin(); it != table.end();)
+    {
+        auto &symbolList = it->second;
+
+        for (auto symIt = symbolList.begin(); symIt != symbolList.end();)
+        {
+            if ((*symIt)->scope == currentScope)
+            {
+                delete *symIt;
+                symIt = symbolList.erase(symIt);
+            }
+            else
+            {
+                ++symIt;
+            }
+        }
+
+        // Remove entry if list is empty
+        if (symbolList.empty())
+        {
+            it = table.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    currentScope--;
+}
+
+void SymbolTable::print() const
+{
+    if (table.empty())
+    {
+        cout << "\n[Symbol Table is empty]\n"
+             << endl;
         return;
     }
-    stack.pop_back();
-}
 
-InsertResult SymbolTable::insert_ident(const SymbolPtr &sym) {
-    if (!sym) return InsertResult::ConflictWithDifferentKind;
-    if (stack.empty()) enter_scope();
+    cout << "\n========== SYMBOL TABLE ==========\n";
+    cout << left << setw(15) << "Name"
+         << setw(15) << "Type"
+         << setw(8) << "Scope"
+         << setw(10) << "Offset" << endl;
+    cout << "---------------------------------------------------\n";
 
-    auto &cur = stack.back().idents;
-    auto it = cur.find(sym->name);
-    if (it != cur.end()) {
-        // redeclared in same scope
-        std::ostringstream ss;
-        ss << "Redeclaration of identifier '" << sym->name << "' at line " << sym->line_declared;
-        report_error(ss.str());
-        return InsertResult::RedeclaredInSameScope;
-    }
-
-    // set scope level metadata
-    sym->scope_level = stack.back().level;
-    cur[sym->name] = sym;
-
-    // Note: Shadowing detection disabled - it produces too many false warnings
-    // for normal C patterns like parameter names being reused as local variables
-
-    return InsertResult::OK;
-}
-
-InsertResult SymbolTable::insert_tag(const SymbolPtr &sym) {
-    if (!sym) return InsertResult::ConflictWithDifferentKind;
-    auto &cur = stack.back().tag_names;
-    auto it = cur.find(sym->name);
-    if (it != cur.end()) {
-        std::ostringstream ss;
-        ss << "Redeclaration of tag '" << sym->name << "' at line " << sym->line_declared;
-        report_error(ss.str());
-        return InsertResult::RedeclaredInSameScope;
-    }
-    sym->scope_level = stack.back().level;
-    cur[sym->name] = sym;
-    return InsertResult::OK;
-}
-
-InsertResult SymbolTable::insert_typedef(const SymbolPtr &sym) {
-    if (!sym) return InsertResult::ConflictWithDifferentKind;
-    auto &cur = stack.back().typedefs;
-    auto it = cur.find(sym->name);
-    if (it != cur.end()) {
-        std::ostringstream ss;
-        ss << "Redeclaration of typedef '" << sym->name << "' at line " << sym->line_declared;
-        report_error(ss.str());
-        return InsertResult::RedeclaredInSameScope;
-    }
-    sym->scope_level = stack.back().level;
-    cur[sym->name] = sym;
-    return InsertResult::OK;
-}
-
-SymbolPtr SymbolTable::lookup_ident(const std::string &name) const {
-    for (int i = (int)stack.size() - 1; i >= 0; --i) {
-        auto it = stack[i].idents.find(name);
-        if (it != stack[i].idents.end()) return it->second;
-    }
-    return nullptr;
-}
-
-SymbolPtr SymbolTable::lookup_tag(const std::string &name) const {
-    for (int i = (int)stack.size() - 1; i >= 0; --i) {
-        auto it = stack[i].tag_names.find(name);
-        if (it != stack[i].tag_names.end()) return it->second;
-    }
-    return nullptr;
-}
-
-SymbolPtr SymbolTable::lookup_typedef(const std::string &name) const {
-    for (int i = (int)stack.size() - 1; i >= 0; --i) {
-        auto it = stack[i].typedefs.find(name);
-        if (it != stack[i].typedefs.end()) return it->second;
-    }
-    return nullptr;
-}
-
-SymbolPtr SymbolTable::lookup_ident_current(const std::string &name) const {
-    if (stack.empty()) return nullptr;
-    auto it = stack.back().idents.find(name);
-    if (it != stack.back().idents.end()) return it->second;
-    return nullptr;
-}
-
-SymbolPtr SymbolTable::lookup_ident_max_scope(const std::string &name, int max_scope_level) const {
-    // Search from innermost to outermost, but only return symbols from max_scope_level or lower
-    for (int i = (int)stack.size() - 1; i >= 0; --i) {
-        auto it = stack[i].idents.find(name);
-        if (it != stack[i].idents.end()) {
-            if (it->second->scope_level <= max_scope_level) {
-                return it->second;
-            }
+    for (const auto &pair : table)
+    {
+        for (const Symbol *sym : pair.second)
+        {
+            cout << left << setw(15) << sym->name
+                 << setw(15) << sym->type.to_string()
+                 << setw(8) << sym->scope
+                 << setw(10) << sym->offset << endl;
         }
     }
-    return nullptr;
-}
 
-SymbolPtr SymbolTable::lookup_tag_current(const std::string &name) const {
-    if (stack.empty()) return nullptr;
-    auto it = stack.back().tag_names.find(name);
-    if (it != stack.back().tag_names.end()) return it->second;
-    return nullptr;
-}
-
-SymbolPtr SymbolTable::lookup_typedef_current(const std::string &name) const {
-    if (stack.empty()) return nullptr;
-    auto it = stack.back().typedefs.find(name);
-    if (it != stack.back().typedefs.end()) return it->second;
-    return nullptr;
-}
-
-bool SymbolTable::mark_defined(const SymbolPtr &sym) {
-    if (!sym) return false;
-    if (sym->is_defined) {
-        std::ostringstream ss;
-        ss << "Symbol '" << sym->name << "' already defined at line " << sym->line_declared;
-        report_error(ss.str());
-        return false;
-    }
-    sym->is_defined = true;
-    return true;
-}
-
-bool SymbolTable::mark_used(const SymbolPtr &sym) {
-    if (!sym) return false;
-    sym->is_used = true;
-    return true;
-}
-
-bool SymbolTable::mark_initialized(const SymbolPtr &sym) {
-    if (!sym) return false;
-    sym->is_initialized = true;
-    return true;
-}
-
-void SymbolTable::dump_current_scope(std::ostream &os) const {
-    if (stack.empty()) { os << "<no scopes>\n"; return; }
-    const auto &s = stack.back();
-    os << "Scope level " << s.level << " (function-level=" << s.is_function_level << ")\n";
-    if (!s.idents.empty()) {
-        os << "  idents:\n";
-        for (auto &p : s.idents) {
-            os << "    " << p.first << " (kind=" << (int)p.second->kind
-               << " line=" << p.second->line_declared << " defined=" << p.second->is_defined << ")\n";
-        }
-    }
-    if (!s.tag_names.empty()) {
-        os << "  tags:\n";
-        for (auto &p : s.tag_names) {
-            os << "    " << p.first << " (line=" << p.second->line_declared << ")\n";
-        }
-    }
-    if (!s.typedefs.empty()) {
-        os << "  typedefs:\n";
-        for (auto &p : s.typedefs) {
-            os << "    " << p.first << " (line=" << p.second->line_declared << ")\n";
-        }
-    }
-}
-
-void SymbolTable::dump_all_scopes(std::ostream &os) const {
-    for (const auto &s : stack) {
-        os << "=== scope level " << s.level << " (function=" << s.is_function_level << ") ===\n";
-        if (!s.idents.empty()) {
-            os << "  idents:\n";
-            for (auto &p : s.idents) {
-                os << "    " << p.first << " (kind=" << (int)p.second->kind
-                   << " line=" << p.second->line_declared << " defined=" << p.second->is_defined << ")\n";
-            }
-        }
-        if (!s.tag_names.empty()) {
-            os << "  tags:\n";
-            for (auto &p : s.tag_names) {
-                os << "    " << p.first << " (line=" << p.second->line_declared << ")\n";
-            }
-        }
-        if (!s.typedefs.empty()) {
-            os << "  typedefs:\n";
-            for (auto &p : s.typedefs) {
-                os << "    " << p.first << " (line=" << p.second->line_declared << ")\n";
-            }
-        }
-    }
-}
-
-void SymbolTable::report_error(std::string msg) const {
-    if (error_cb) {
-        error_cb(msg);
-    } else {
-        // non-const cast to push errors into local vector (we keep errors for caller)
-        auto nonconst = const_cast<SymbolTable*>(this);
-        nonconst->error_list.push_back(msg);
-    }
+    cout << "==================================\n"
+         << endl;
 }
