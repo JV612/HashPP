@@ -48,6 +48,11 @@ enum TACOp
     TAC_PRE_INC, // ++x (x = x + 1)
     TAC_PRE_DEC, // --x (x = x - 1)
 
+    // Pointer/Array Operations
+    TAC_ADDR_OF,     // x = &y (address-of)
+    TAC_DEREF,       // x = *y (dereference/load)
+    TAC_DEREF_STORE, // *x = y (store through pointer)
+
     // Bitwise Operations (Phase 1)
     TAC_BITWISE_AND, // x = y & z
     TAC_BITWISE_OR,  // x = y | z

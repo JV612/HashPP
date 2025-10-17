@@ -4,7 +4,9 @@
 #include <string.h>
 #include "symbol_table.h"
 #include "tac.h"
-#include "ast.h"
+#include "expression.h"
+#include "statement.h"
+#include "declaration.h"
 
 int yylex(void);
 void yyerror(const char *s);
@@ -12,6 +14,11 @@ extern int yylineno;
 
 // Current type being declared
 Type current_type;
+
+// Track pointer levels and array dimensions for current declarator
+int current_pointer_level = 0;
+bool current_is_array = false;
+std::vector<int> current_array_sizes;
 
 %}
 
@@ -57,6 +64,7 @@ Type current_type;
 %type <str> direct_declarator
 %type <str> identifier_list
 %type <str> parameter_declaration
+%type <ival> pointer
 
 %type <expr> expression
 %type <expr> assignment_expression
@@ -81,6 +89,10 @@ Type current_type;
 %type <expr> constant_expression
 
 %type <type_ptr> type_specifier
+
+%type <decl> declaration
+%type <decl> init_declarator
+%type <decl> init_declarator_list
 
 %type <stmt> statement
 %type <stmt> labeled_statement
@@ -152,6 +164,9 @@ postfix_expression
 	: primary_expression
         { $$ = $1; }
 	| postfix_expression '[' expression ']'
+        {
+            $$ = create_array_access_expression($1, $3);
+        }
 	| postfix_expression '(' ')'
 	| postfix_expression '(' argument_expression_list ')'
 	| postfix_expression '.' IDENTIFIER
@@ -173,7 +188,9 @@ unary_expression
 | DEC_OP unary_expression
         { $$ = create_unary_expression(TAC_PRE_DEC, $2); }
 | '&' cast_expression
+        { $$ = create_unary_expression(TAC_ADDR_OF, $2); }
 | '*' cast_expression
+        { $$ = create_unary_expression(TAC_DEREF, $2); }
 | '+' cast_expression
         { $$ = create_unary_expression(TAC_UPLUS, $2); }
 | '-' cast_expression %prec UMINUS
@@ -297,9 +314,8 @@ assignment_expression
         }
 	| unary_expression '=' assignment_expression
         {
-            // For now, fallback - this shouldn't happen in simple cases
-            fprintf(stderr, "Warning: Complex assignment not fully supported yet\n");
-            $$ = $3;
+            // General assignment (LHS can be *ptr, arr[i], etc.)
+            $$ = create_general_assignment_expression($1, $3);
         }
 	;
 
@@ -336,9 +352,11 @@ constant_expression
 
 declaration
 	: declaration_specifiers ';'
+        { $$ = nullptr; }
 	| declaration_specifiers init_declarator_list ';'
         {
             printf("\n--- Declaration complete ---\n");
+            $$ = $2; /* Return the last declarator from the list (for use in for-loops) */
         }
 	;
 
@@ -353,30 +371,72 @@ declaration_specifiers
 
 init_declarator_list
 	: init_declarator
+        { $$ = $1; }  /* Return the first (and possibly only) declarator */
 	| init_declarator_list ',' init_declarator
+        { 
+            /* For multiple declarators, process previous ones completely */
+            /* They won't be wrapped in DeclarationStatement, so insert + generate now */
+            if ($1) {
+                $1->insert_symbol();
+                $1->generate_tac();
+            }
+            $$ = $3;  /* Return the latest declarator */
+        }
 	;
 
 init_declarator
 	: declarator {
           if ($1) {
               printf("[Parser] Variable: %s\n", $1);
+              // Create type with pointer level from declarator
+              Type* var_type = new Type(current_type);
+              var_type->pointer_level = current_pointer_level;
+              var_type->is_array = current_is_array;
+              var_type->array_dim = current_array_sizes.size();
+              
+              // Array sizes are already in correct order (left-to-right as declared)
+              var_type->array_sizes = current_array_sizes;
+              
               VariableDeclaration* decl = create_variable_declaration(
-                  new Type(current_type),
+                  var_type,
                   $1,
                   nullptr
               );
-              decl->generate_tac();
+              $$ = decl;
+              
+              // Reset for next declarator
+              current_pointer_level = 0;
+              current_is_array = false;
+              current_array_sizes.clear();
+          } else {
+              $$ = nullptr;
           }
       }
 	| declarator '=' initializer {
           if ($1) {
               printf("[Parser] Variable with initializer: %s\n", $1);
+              // Create type with pointer level from declarator
+              Type* var_type = new Type(current_type);
+              var_type->pointer_level = current_pointer_level;
+              var_type->is_array = current_is_array;
+              var_type->array_dim = current_array_sizes.size();
+              
+              // Array sizes are already in correct order (left-to-right as declared)
+              var_type->array_sizes = current_array_sizes;
+              
               VariableDeclaration* decl = create_variable_declaration(
-                  new Type(current_type),
+                  var_type,
                   $1,
                   $3
               );
-              decl->generate_tac();
+              $$ = decl;
+              
+              // Reset for next declarator
+              current_pointer_level = 0;
+              current_is_array = false;
+              current_array_sizes.clear();
+          } else {
+              $$ = nullptr;
           }
       }
 	;
@@ -518,16 +578,60 @@ type_qualifier
 	;
 
 declarator
-	: pointer direct_declarator        { $$ = $2; }
-	| direct_declarator               { $$ = $1; }
-	| '&' direct_declarator           { $$ = $2; }
+	: pointer direct_declarator        
+        { 
+            current_pointer_level = $1;
+            $$ = $2; 
+        }
+	| direct_declarator               
+        { 
+            current_pointer_level = 0;
+            $$ = $1; 
+        }
+	| '&' direct_declarator           
+        { 
+            current_pointer_level = 0;
+            $$ = $2; 
+        }
 	;
 
 direct_declarator
-    : IDENTIFIER                      { $$ = $1; }
-    | '(' declarator ')'              { $$ = $2; }
-    | direct_declarator '[' constant_expression ']' 
-    | direct_declarator '[' ']' 
+    : IDENTIFIER                      
+        { 
+            $$ = $1; 
+        }
+    | '(' declarator ')'              
+        { 
+            $$ = $2; 
+        }
+    | direct_declarator '[' constant_expression ']'
+        {
+            // Array declarator: arr[size]
+            // Evaluate constant expression to get size
+            $3->generate_tac();
+            int array_size = 0;
+            
+            // Extract size from constant expression
+            if ($3->result && $3->result->type == TACOperand::OPERAND_CONSTANT) {
+                array_size = atoi($3->result->name.c_str());
+            } else {
+                fprintf(stderr, "[Error] Line %d: Array size must be a constant expression\n", yylineno);
+                array_size = 0;
+            }
+            
+            // Add to array sizes (in reverse order, will be reversed later)
+            current_array_sizes.push_back(array_size);
+            current_is_array = true;
+            
+            $$ = $1;  // Return the base identifier
+        }
+    | direct_declarator '[' ']'
+        {
+            // Unsized array: arr[]
+            current_array_sizes.push_back(0);  // 0 means unspecified
+            current_is_array = true;
+            $$ = $1;
+        }
     | direct_declarator '(' parameter_type_list ')' {
           $$ = $1;
       }
@@ -542,9 +646,13 @@ direct_declarator
 
 pointer
 	: '*'
+        { $$ = 1; }
 	| '*' type_qualifier_list
+        { $$ = 1; }
 	| '*' pointer
+        { $$ = 1 + $2; }
 	| '*' type_qualifier_list pointer
+        { $$ = 1 + $3; }
 	;
 
 type_qualifier_list
@@ -629,24 +737,54 @@ statement
 	| jump_statement
         { $$ = $1; }
 	| declaration
-        { $$ = nullptr; } /* Declarations don't return statements */
+        { 
+            /* Declarations used as statements should be added to the statement list */
+            /* Insert into symbol table immediately (during parsing, while scope is active) */
+            /* But defer TAC generation to preserve execution order */
+            if ($1) {
+                /* Insert symbol immediately but don't generate TAC yet */
+                $1->insert_symbol();
+                /* Wrap in DeclarationStatement for deferred TAC generation */
+                $$ = create_declaration_statement($1);
+            } else {
+                $$ = nullptr;
+            }
+        }
 	;
 
 labeled_statement
     : IDENTIFIER ':' statement
         { $$ = $3; /* For now, ignore labels */ }
     | CASE constant_expression ':' statement
-        { $$ = $4; }
+        { $$ = create_case_label($2, $4); }
     | DEFAULT ':' statement
-        { $$ = $3; }
+        { $$ = create_default_label($3); }
     ;
 
 
 compound_statement
-    : '{' '}'
-        { $$ = create_compound_statement(); }
-    | '{' statement_list '}'
-        { $$ = $2; }
+    : '{' 
+        { 
+            /* Enter new scope when opening brace */
+            symbolTable.enterScope(); 
+        }
+      '}'
+        { 
+            /* Exit scope when closing brace - but keep symbols for TAC generation */
+            symbolTable.exitScopeKeepSymbols();
+            $$ = create_compound_statement(); 
+        }
+    | '{' 
+        { 
+            /* Enter new scope when opening brace */
+            symbolTable.enterScope(); 
+        }
+      statement_list '}'
+        { 
+            /* Exit scope when closing brace - but keep symbols for TAC generation */
+            symbolTable.exitScopeKeepSymbols();
+            $$ = $3;  /* Note: shifted by mid-rule action */ 
+        }
     ;
 
 
@@ -687,33 +825,68 @@ selection_statement
 	| IF '(' expression ')' statement ELSE statement
         { $$ = create_if_statement($3, $5, $7); }
 	| SWITCH '(' expression ')' statement
-        { $$ = nullptr; /* Not implemented yet */ }
+        { $$ = create_switch_statement($3, $5); }
     ;
 
 iteration_statement
 	: WHILE '(' expression ')' statement
         { $$ = create_while_statement($3, $5); }
 	| UNTIL '(' expression ')' statement
-        { $$ = nullptr; /* Not implemented */ }
+        { $$ = create_until_statement($3, $5); }
 	| DO statement WHILE '(' expression ')' ';'
-        { $$ = nullptr; /* Not implemented yet */ }
+        { $$ = create_dowhile_statement($2, $5); }
 	| FOR '(' expression_statement expression_statement ')' statement
-        { $$ = nullptr; /* Not implemented yet */ }
+        { 
+            // Extract expression from expression_statement for condition
+            Expression* cond = nullptr;
+            if ($4) {
+                ExpressionStatement* expr_stmt = dynamic_cast<ExpressionStatement*>($4);
+                if (expr_stmt) cond = expr_stmt->expr;
+            }
+            $$ = create_for_statement($3, cond, nullptr, $6); 
+        }
 	| FOR '(' expression_statement expression_statement expression ')' statement
-        { $$ = nullptr; /* Not implemented yet */ }
+        { 
+            Expression* cond = nullptr;
+            if ($4) {
+                ExpressionStatement* expr_stmt = dynamic_cast<ExpressionStatement*>($4);
+                if (expr_stmt) cond = expr_stmt->expr;
+            }
+            $$ = create_for_statement($3, cond, $5, $7); 
+        }
 	| FOR '(' declaration expression_statement ')' statement
-        { $$ = nullptr; /* Not implemented yet */ }
+        { 
+            // Wrap declaration in DeclarationStatement
+            Statement* init = $3 ? create_declaration_statement($3) : nullptr;
+            
+            Expression* cond = nullptr;
+            if ($4) {
+                ExpressionStatement* expr_stmt = dynamic_cast<ExpressionStatement*>($4);
+                if (expr_stmt) cond = expr_stmt->expr;
+            }
+            $$ = create_for_statement(init, cond, nullptr, $6); 
+        }
 	| FOR '(' declaration expression_statement expression ')' statement
-        { $$ = nullptr; /* Not implemented yet */ }
+        { 
+            // Wrap declaration in DeclarationStatement
+            Statement* init = $3 ? create_declaration_statement($3) : nullptr;
+            
+            Expression* cond = nullptr;
+            if ($4) {
+                ExpressionStatement* expr_stmt = dynamic_cast<ExpressionStatement*>($4);
+                if (expr_stmt) cond = expr_stmt->expr;
+            }
+            $$ = create_for_statement(init, cond, $5, $7); 
+        }
 	;
 
 jump_statement
     : GOTO IDENTIFIER ';'
         { $$ = nullptr; /* Not implemented */ }
     | CONTINUE ';'
-        { $$ = nullptr; /* Not implemented */ }
+        { $$ = create_continue_statement(); }
     | BREAK ';'
-        { $$ = nullptr; /* Not implemented */ }
+        { $$ = create_break_statement(); }
     | RETURN ';'
         { $$ = nullptr; /* Not implemented */ }
     | RETURN expression ';'

@@ -12,13 +12,13 @@ TARGET = compiler
 # Source files
 PARSER_SRC = src/ansic.y
 LEXER_SRC = src/tokenizer.lpp
-CPP_SOURCES = src/symbol_table.cpp src/tac.cpp src/ast.cpp
+CPP_SOURCES = src/symbol_table.cpp src/tac.cpp src/ast_base.cpp src/expression.cpp src/statement.cpp src/declaration.cpp
 
 # Generated files
 PARSER_OUT = src/ansic.tab.c
 PARSER_HDR = src/ansic.tab.h
 LEXER_OUT = src/lex.yy.c
-OBJECTS = src/symbol_table.o src/tac.o src/ast.o
+OBJECTS = src/symbol_table.o src/tac.o src/ast_base.o src/expression.o src/statement.o src/declaration.o
 
 # ============================================================================
 # Build Targets
@@ -44,8 +44,17 @@ src/symbol_table.o: src/symbol_table.cpp src/symbol_table.h
 src/tac.o: src/tac.cpp src/tac.h
 	$(CXX) $(CXXFLAGS) -c src/tac.cpp -o src/tac.o
 
-src/ast.o: src/ast.cpp src/ast.h src/symbol_table.h src/tac.h
-	$(CXX) $(CXXFLAGS) -c src/ast.cpp -o src/ast.o
+src/ast_base.o: src/ast_base.cpp src/ast_base.h
+	$(CXX) $(CXXFLAGS) -c src/ast_base.cpp -o src/ast_base.o
+
+src/expression.o: src/expression.cpp src/expression.h src/ast_base.h src/symbol_table.h src/tac.h
+	$(CXX) $(CXXFLAGS) -c src/expression.cpp -o src/expression.o
+
+src/statement.o: src/statement.cpp src/statement.h src/expression.h src/declaration.h src/ast_base.h src/tac.h
+	$(CXX) $(CXXFLAGS) -c src/statement.cpp -o src/statement.o
+
+src/declaration.o: src/declaration.cpp src/declaration.h src/expression.h src/ast_base.h src/symbol_table.h src/tac.h
+	$(CXX) $(CXXFLAGS) -c src/declaration.cpp -o src/declaration.o
 
 # ============================================================================
 # Utility Targets

@@ -11,7 +11,9 @@
 // ============================================================================
 #include "symbol_table.h"   // NEW: Type system and symbol management
 #include "tac.h"            // NEW: Three-Address Code generation
-#include "ast.h"            // NEW: Abstract Syntax Tree node classes
+#include "expression.h"     // NEW: Expression AST nodes
+#include "statement.h"      // NEW: Statement AST nodes
+#include "declaration.h"    // NEW: Declaration AST nodes
 
 #include "ansic.tab.h"  
 

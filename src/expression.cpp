@@ -1,4 +1,4 @@
-#include "ast.h"
+#include "expression.h"
 #include "symbol_table.h"
 #include <iostream>
 #include <sstream>
@@ -7,16 +7,14 @@
 using namespace std;
 
 // ============================================================================
-// AST Implementation - Phase 1 Compiler
+// Expression Implementation
 // ============================================================================
-// This file contains:
+// This file contains implementations for all expression node types:
 //   1. Expression Base Class
 //   2. Primary Expressions (identifiers, constants)
 //   3. Binary Expressions (arithmetic, bitwise, comparison)
 //   4. Unary Expressions (prefix inc/dec, negation, bitwise NOT)
 //   5. Assignment Expressions
-//   6. Variable Declarations
-//   7. Helper Functions for AST creation
 //
 // Each expression node implements:
 //   - Constructor/Destructor
@@ -41,27 +39,29 @@ Expression::~Expression()
 // ============================================================================
 
 PrimaryExpression::PrimaryExpression(const string &id_name)
-    : prim_type(PRIM_IDENTIFIER), name(id_name), int_value(0), char_value('\0'), float_value(0.0), expr(nullptr)
+    : prim_type(PRIM_IDENTIFIER), name(id_name), int_value(0), char_value('\0'), float_value(0.0), expr(nullptr), symbol_ref(nullptr)
 {
+    // Look up symbol during construction (while in correct scope)
+    symbol_ref = symbolTable.lookup(id_name);
 }
 
 PrimaryExpression::PrimaryExpression(int value)
-    : prim_type(PRIM_INT_CONSTANT), int_value(value), char_value('\0'), float_value(0.0), expr(nullptr)
+    : prim_type(PRIM_INT_CONSTANT), int_value(value), char_value('\0'), float_value(0.0), expr(nullptr), symbol_ref(nullptr)
 {
 }
 
 PrimaryExpression::PrimaryExpression(char value)
-    : prim_type(PRIM_CHAR_CONSTANT), int_value(0), char_value(value), float_value(0.0), expr(nullptr)
+    : prim_type(PRIM_CHAR_CONSTANT), int_value(0), char_value(value), float_value(0.0), expr(nullptr), symbol_ref(nullptr)
 {
 }
 
 PrimaryExpression::PrimaryExpression(double value)
-    : prim_type(PRIM_FLOAT_CONSTANT), int_value(0), char_value('\0'), float_value(value), expr(nullptr)
+    : prim_type(PRIM_FLOAT_CONSTANT), int_value(0), char_value('\0'), float_value(value), expr(nullptr), symbol_ref(nullptr)
 {
 }
 
 PrimaryExpression::PrimaryExpression(Expression *e)
-    : prim_type(PRIM_PAREN_EXPR), int_value(0), char_value('\0'), float_value(0.0), expr(e)
+    : prim_type(PRIM_PAREN_EXPR), int_value(0), char_value('\0'), float_value(0.0), expr(e), symbol_ref(nullptr)
 {
 }
 
@@ -108,8 +108,8 @@ void PrimaryExpression::generate_tac()
     {
     case PRIM_IDENTIFIER:
     {
-        // Look up in symbol table
-        Symbol *sym = symbolTable.lookup(name);
+        // Use cached symbol from construction time (correct scope)
+        Symbol *sym = symbol_ref;
         if (!sym)
         {
             cerr << "Error: Undefined variable '" << name << "'" << endl;
@@ -117,7 +117,9 @@ void PrimaryExpression::generate_tac()
         }
         else
         {
-            result = new TACOperand(TACOperand::OPERAND_IDENTIFIER, name);
+            // Use mangled name with scope: varname_scope
+            string mangled_name = name + "_" + std::to_string(sym->scope);
+            result = new TACOperand(TACOperand::OPERAND_IDENTIFIER, mangled_name);
             type = new Type(sym->type);
         }
         break;
@@ -584,6 +586,106 @@ void UnaryExpression::generate_tac()
         return;
     }
 
+    // Address-of operator (&)
+    if (op == TAC_ADDR_OF)
+    {
+        // Special case: &arr[i] - take address of array element
+        ArrayAccessExpression *array_expr = dynamic_cast<ArrayAccessExpression *>(expr);
+        if (array_expr)
+        {
+            // For &arr[i], we want the address that arr[i] calculates (without the final dereference)
+            array_expr->array->generate_tac();
+            array_expr->index->generate_tac();
+
+            code = array_expr->array->code;
+            code.insert(code.end(), array_expr->index->code.begin(), array_expr->index->code.end());
+
+            // Calculate element size and offset
+            int elem_size = array_expr->array->type->get_element_size();
+
+            // t1 = index * elem_size
+            TACOperand t1 = tacGen.newTemp();
+            TACOperand elem_size_op(TACOperand::OPERAND_CONSTANT, std::to_string(elem_size));
+            tacGen.emit(TAC_MUL, t1, *array_expr->index->result, elem_size_op);
+            code.push_back(tacGen.getCode().back());
+
+            // result = array + t1 (this is the address we want!)
+            TACOperand temp = tacGen.newTemp();
+            result = new TACOperand(temp);
+            tacGen.emit(TAC_ADD, *result, *array_expr->array->result, t1);
+            code.push_back(tacGen.getCode().back());
+
+            // Result type: pointer to element type
+            type = new Type(*array_expr->type);
+            type->pointer_level++;
+
+            return;
+        }
+
+        // Check that operand is an lvalue (can take address)
+        if (!expr->result || expr->result->type != TACOperand::OPERAND_IDENTIFIER)
+        {
+            fprintf(stderr, "[Type Error] Line %d: Cannot take address of non-lvalue (not a variable)\n",
+                    line_no);
+            type = new Type(TYPE_ERROR);
+            return;
+        }
+
+        // Result type: pointer to operand's type
+        type = new Type(*expr->type);
+        type->pointer_level++;
+
+        // TAC Generation
+        code = expr->code;
+        TACOperand temp = tacGen.newTemp();
+        result = new TACOperand(temp);
+        tacGen.emit(TAC_ADDR_OF, *result, *expr->result);
+        code.push_back(tacGen.getCode().back());
+
+        return;
+    }
+
+    // Dereference operator (*)
+    if (op == TAC_DEREF)
+    {
+        // Check that operand is a pointer or array
+        if (!expr->type->is_pointer() && !expr->type->is_array)
+        {
+            fprintf(stderr, "[Type Error] Line %d: Cannot dereference non-pointer type %s\n",
+                    line_no, expr->type->to_string().c_str());
+            type = new Type(TYPE_ERROR);
+            return;
+        }
+
+        // Result type: decrease pointer level or reduce array dimension
+        type = new Type(*expr->type);
+        if (type->is_array)
+        {
+            type->array_dim--;
+            if (!type->array_sizes.empty())
+            {
+                type->array_sizes.erase(type->array_sizes.begin());
+            }
+            if (type->array_dim == 0)
+            {
+                type->is_array = false;
+            }
+        }
+        else if (type->pointer_level > 0)
+        {
+            type->pointer_level--;
+        }
+
+        // TAC Generation
+        code = expr->code;
+        TACOperand temp = tacGen.newTemp();
+        result = new TACOperand(temp);
+        tacGen.emit(TAC_DEREF, *result, *expr->result);
+        code.push_back(tacGen.getCode().back());
+
+        return;
+    }
+
     // Unary + and - require numeric operands
     if (op == TAC_UMINUS || op == TAC_UPLUS)
     {
@@ -618,14 +720,25 @@ void UnaryExpression::generate_tac()
             return;
         }
     }
-    // Prefix increment/decrement require numeric operands
+    // Prefix increment/decrement require numeric lvalue operands
     else if (op == TAC_PRE_INC || op == TAC_PRE_DEC)
     {
+        const char *op_name = (op == TAC_PRE_INC) ? "++" : "--";
+
         if (!expr->type->is_numeric())
         {
-            const char *op_name = (op == TAC_PRE_INC) ? "++" : "--";
             fprintf(stderr, "[Type Error] Line %d: Prefix '%s' requires numeric operand, got %s\n",
                     line_no, op_name, expr->type->to_string().c_str());
+            type = new Type(TYPE_ERROR);
+            return;
+        }
+
+        // Check that operand is an lvalue (modifiable variable)
+        // expr->result should be an OPERAND_IDENTIFIER, not a constant or temp
+        if (!expr->result || expr->result->type != TACOperand::OPERAND_IDENTIFIER)
+        {
+            fprintf(stderr, "[Type Error] Line %d: Prefix '%s' requires an lvalue (modifiable variable)\n",
+                    line_no, op_name);
             type = new Type(TYPE_ERROR);
             return;
         }
@@ -683,8 +796,10 @@ void UnaryExpression::generate_tac()
 // ============================================================================
 
 AssignmentExpression::AssignmentExpression(const string &var, Expression *rhs_expr)
-    : lhs_name(var), rhs(rhs_expr)
+    : lhs_name(var), rhs(rhs_expr), lhs_symbol(nullptr)
 {
+    // Look up LHS symbol during construction (while in correct scope)
+    lhs_symbol = symbolTable.lookup(var);
 }
 
 AssignmentExpression::~AssignmentExpression()
@@ -722,8 +837,8 @@ void AssignmentExpression::generate_tac()
         return;
     }
 
-    // Look up LHS variable in symbol table
-    Symbol *sym = symbolTable.lookup(lhs_name);
+    // Look up LHS variable in symbol table (use cached symbol from construction)
+    Symbol *sym = lhs_symbol;
     if (!sym)
     {
         fprintf(stderr, "[Type Error] Line %d: Undefined variable '%s'\n",
@@ -762,8 +877,9 @@ void AssignmentExpression::generate_tac()
     // Copy code from RHS
     code = rhs->code;
 
-    // Create operand for LHS
-    TACOperand lhs(TACOperand::OPERAND_IDENTIFIER, lhs_name);
+    // Create operand for LHS with mangled name: varname_scope
+    string mangled_lhs = lhs_name + "_" + std::to_string(sym->scope);
+    TACOperand lhs(TACOperand::OPERAND_IDENTIFIER, mangled_lhs);
 
     // Emit assignment
     tacGen.emit(TAC_ASSIGN, lhs, *rhs->result);
@@ -771,431 +887,6 @@ void AssignmentExpression::generate_tac()
 
     // Result is the LHS
     result = new TACOperand(lhs);
-}
-
-// ============================================================================
-// Declaration Base Class
-// ============================================================================
-
-Declaration::~Declaration()
-{
-    delete decl_type;
-    // Note: code vector contains pointers managed by TACGenerator
-}
-
-// ============================================================================
-// ============================================================================
-// VARIABLE DECLARATIONS
-// Handles: type varname = initializer
-// Inserts into symbol table and validates initializer type compatibility
-// Phase 1: Basic declarations with int, char, double types
-// ============================================================================
-
-// ============================================================================
-// STATEMENT NODES - Control Flow
-// ============================================================================
-// Statements control the flow of execution:
-//   - IfStatement: if-else branches with labels and jumps
-//   - WhileStatement: loops with labels and conditional jumps
-//   - ExpressionStatement: single expression followed by semicolon
-//   - CompoundStatement: block of statements in braces {}
-// ============================================================================
-
-Statement::~Statement()
-{
-    for (TACInstruction *instr : code)
-    {
-        delete instr;
-    }
-}
-
-// ============================================================================
-// IfStatement - if (condition) then_stmt else else_stmt
-// ============================================================================
-// TAC Pattern with ELSE:
-//   <condition.code>
-//   ifFalse condition.result goto L_else
-//   <then_stmt.code>
-//   goto L_end
-//   L_else:
-//   <else_stmt.code>
-//   L_end:
-//
-// TAC Pattern without ELSE:
-//   <condition.code>
-//   ifFalse condition.result goto L_end
-//   <then_stmt.code>
-//   L_end:
-// ============================================================================
-
-IfStatement::IfStatement(Expression *cond, Statement *then_s, Statement *else_s)
-    : condition(cond), then_stmt(then_s), else_stmt(else_s)
-{
-}
-
-IfStatement::~IfStatement()
-{
-    delete condition;
-    delete then_stmt;
-    if (else_stmt)
-        delete else_stmt;
-}
-
-string IfStatement::to_string() const
-{
-    string result = "if (" + condition->to_string() + ") " + then_stmt->to_string();
-    if (else_stmt)
-    {
-        result += " else " + else_stmt->to_string();
-    }
-    return result;
-}
-
-void IfStatement::generate_tac()
-{
-    // ========================================================================
-    // Backpatching-based if-then-else translation
-    // ========================================================================
-    // Grammar: if (B) M1 S1 N else M2 S2
-    //
-    // B.truelist = backpatch to M1.instr
-    // B.falselist = backpatch to M2.instr (or after S1 if no else)
-    // N generates goto and adds to S.nextlist
-    // ========================================================================
-
-    // STEP 1: Generate code for condition
-    condition->generate_tac();
-    code = condition->code;
-
-    if (else_stmt)
-    {
-        // If-else case: if (B) M1 S1 N else M2 S2
-
-        // M1: marker before then statement
-        int M1 = tacGen.nextinstr();
-
-        // Backpatch B.truelist to M1
-        backpatch(condition->truelist, M1);
-
-        // Generate then statement
-        then_stmt->generate_tac();
-        code.insert(code.end(), then_stmt->code.begin(), then_stmt->code.end());
-
-        // N: generate goto to skip else (will be backpatched later)
-        int N_goto = tacGen.emit(TAC_GOTO, TACOperand(), TACOperand());
-        InstructionList N_list = makelist(N_goto);
-
-        // M2: marker before else statement
-        int M2 = tacGen.nextinstr();
-
-        // Backpatch B.falselist to M2
-        backpatch(condition->falselist, M2);
-
-        // Generate else statement
-        else_stmt->generate_tac();
-        code.insert(code.end(), else_stmt->code.begin(), else_stmt->code.end());
-
-        // S.nextlist = merge(S1.nextlist, N, S2.nextlist)
-        nextlist = merge(then_stmt->nextlist, N_list);
-        nextlist = merge(nextlist, else_stmt->nextlist);
-    }
-    else
-    {
-        // If-only case: if (B) M S
-
-        // M: marker before then statement
-        int M = tacGen.nextinstr();
-
-        // Backpatch B.truelist to M
-        backpatch(condition->truelist, M);
-
-        // Generate then statement
-        then_stmt->generate_tac();
-        code.insert(code.end(), then_stmt->code.begin(), then_stmt->code.end());
-
-        // S.nextlist = merge(B.falselist, S1.nextlist)
-        nextlist = merge(condition->falselist, then_stmt->nextlist);
-    }
-
-    printf("[AST] IfStatement: Generated TAC with backpatching\n");
-}
-
-// ============================================================================
-// WhileStatement - while (condition) body
-// ============================================================================
-// TAC Pattern:
-//   L_begin:
-//   <condition.code>
-//   ifFalse condition.result goto L_end
-//   <body.code>
-//   goto L_begin
-//   L_end:
-// ============================================================================
-
-WhileStatement::WhileStatement(Expression *cond, Statement *body_stmt)
-    : condition(cond), body(body_stmt)
-{
-}
-
-WhileStatement::~WhileStatement()
-{
-    delete condition;
-    delete body;
-}
-
-string WhileStatement::to_string() const
-{
-    return "while (" + condition->to_string() + ") " + body->to_string();
-}
-
-void WhileStatement::generate_tac()
-{
-    // ========================================================================
-    // Backpatching-based while loop translation
-    // ========================================================================
-    // Grammar: while M1 (B) M2 S
-    //
-    // M1.instr = beginning of loop (for repeat)
-    // backpatch B.truelist to M2.instr
-    // backpatch S.nextlist to M1.instr
-    // S.nextlist = B.falselist
-    // ========================================================================
-
-    // M1: beginning of loop
-    int M1 = tacGen.nextinstr();
-
-    // Generate code for condition
-    condition->generate_tac();
-    code = condition->code;
-
-    // M2: start of body
-    int M2 = tacGen.nextinstr();
-
-    // Backpatch B.truelist to M2 (enter loop body when true)
-    backpatch(condition->truelist, M2);
-
-    // Generate code for body
-    body->generate_tac();
-    code.insert(code.end(), body->code.begin(), body->code.end());
-
-    // Backpatch S.nextlist (end of body) to M1 (repeat loop)
-    backpatch(body->nextlist, M1);
-
-    // Generate goto back to beginning
-    int goto_instr = tacGen.emit(TAC_GOTO, TACOperand(), TACOperand());
-    tacGen.getCode()[goto_instr]->target_line = M1;
-
-    // S.nextlist = B.falselist (exit loop when condition is false)
-    nextlist = condition->falselist;
-
-    printf("[AST] WhileStatement: Generated TAC with backpatching\n");
-}
-
-// ============================================================================
-// ExpressionStatement - expression;
-// ============================================================================
-
-ExpressionStatement::ExpressionStatement(Expression *e)
-    : expr(e)
-{
-}
-
-ExpressionStatement::~ExpressionStatement()
-{
-    if (expr)
-        delete expr;
-}
-
-string ExpressionStatement::to_string() const
-{
-    if (expr)
-        return expr->to_string() + ";";
-    return ";";
-}
-
-void ExpressionStatement::generate_tac()
-{
-    if (expr)
-    {
-        printf("[ExpressionStatement] Generating TAC for expression\n");
-        expr->generate_tac();
-        code = expr->code;
-    }
-    else
-    {
-        printf("[ExpressionStatement] Empty statement (just semicolon)\n");
-    }
-}
-
-// ============================================================================
-// CompoundStatement - { stmt1; stmt2; ... }
-// ============================================================================
-
-CompoundStatement::CompoundStatement()
-{
-}
-
-CompoundStatement::~CompoundStatement()
-{
-    for (Statement *stmt : statements)
-    {
-        delete stmt;
-    }
-}
-
-void CompoundStatement::add_statement(Statement *stmt)
-{
-    if (stmt)
-        statements.push_back(stmt);
-}
-
-string CompoundStatement::to_string() const
-{
-    string result = "{\n";
-    for (Statement *stmt : statements)
-    {
-        result += "  " + stmt->to_string() + "\n";
-    }
-    result += "}";
-    return result;
-}
-
-void CompoundStatement::generate_tac()
-{
-    printf("[CompoundStatement] Generating TAC for %zu statements\n", statements.size());
-
-    InstructionList current_nextlist;
-
-    for (size_t i = 0; i < statements.size(); i++)
-    {
-        Statement *stmt = statements[i];
-
-        // Backpatch previous statement's nextlist to current position (M)
-        int M = tacGen.nextinstr();
-        backpatch(current_nextlist, M);
-
-        // Generate code for this statement
-        stmt->generate_tac();
-        code.insert(code.end(), stmt->code.begin(), stmt->code.end());
-
-        // Update nextlist to this statement's nextlist
-        current_nextlist = stmt->nextlist;
-    }
-
-    // The compound statement's nextlist is the last statement's nextlist
-    nextlist = current_nextlist;
-}
-
-// ============================================================================
-// Helper Functions - Statement Creation
-// ============================================================================
-
-IfStatement *create_if_statement(Expression *cond, Statement *then_stmt, Statement *else_stmt)
-{
-    return new IfStatement(cond, then_stmt, else_stmt);
-}
-
-WhileStatement *create_while_statement(Expression *cond, Statement *body)
-{
-    return new WhileStatement(cond, body);
-}
-
-ExpressionStatement *create_expression_statement(Expression *expr)
-{
-    return new ExpressionStatement(expr);
-}
-
-CompoundStatement *create_compound_statement()
-{
-    return new CompoundStatement();
-}
-
-// ============================================================================
-// VARIABLE DECLARATIONS
-// ============================================================================
-
-VariableDeclaration::VariableDeclaration(Type *t, const string &name, Expression *init)
-    : var_name(name), initializer(init)
-{
-    decl_type = t;
-}
-
-VariableDeclaration::~VariableDeclaration()
-{
-    if (initializer)
-        delete initializer;
-}
-
-string VariableDeclaration::to_string() const
-{
-    string result = decl_type->to_string() + " " + var_name;
-    if (initializer)
-    {
-        result += " = " + initializer->to_string();
-    }
-    return result;
-}
-
-void VariableDeclaration::generate_tac()
-{
-    cout << "[AST] Variable declaration: " << var_name
-         << " (type: " << decl_type->to_string() << ")" << endl;
-
-    // Insert into symbol table
-    symbolTable.insert(var_name, *decl_type);
-
-    // If there's an initializer, generate code for it
-    if (initializer)
-    {
-        initializer->generate_tac();
-
-        // ========================================================================
-        // Phase 1: Type Checking for Variable Initialization
-        // ========================================================================
-
-        // Check if initializer has a type
-        if (!initializer->type)
-        {
-            fprintf(stderr, "[Type Error] Line %d: Missing type information in initializer for '%s'\n",
-                    line_no, var_name.c_str());
-            return;
-        }
-
-        // Error propagation from initializer
-        if (initializer->type->is_error())
-        {
-            return;
-        }
-
-        // Check type compatibility
-        if (decl_type->base_type != initializer->type->base_type)
-        {
-            // Only warn if both are numeric (allow implicit conversions)
-            if (decl_type->is_numeric() && initializer->type->is_numeric())
-            {
-                fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in initialization of '%s' from %s to %s\n",
-                        line_no, var_name.c_str(), initializer->type->to_string().c_str(), decl_type->to_string().c_str());
-            }
-            else
-            {
-                // Error for non-numeric type mismatches
-                fprintf(stderr, "[Type Error] Line %d: Cannot initialize '%s' of type %s with value of type %s\n",
-                        line_no, var_name.c_str(), decl_type->to_string().c_str(), initializer->type->to_string().c_str());
-                return;
-            }
-        }
-
-        // ========================================================================
-        // TAC Generation (only if types are valid)
-        // ========================================================================
-
-        code = initializer->code;
-
-        // Generate assignment
-        TACOperand lhs(TACOperand::OPERAND_IDENTIFIER, var_name);
-        tacGen.emit(TAC_ASSIGN, lhs, *initializer->result);
-        code.push_back(tacGen.getCode().back());
-    }
 }
 
 // ============================================================================
@@ -1279,11 +970,242 @@ AssignmentExpression *create_assignment_expression(const string &var, Expression
 }
 
 // ============================================================================
-// Helper Functions - Declaration Creation
+// GENERAL ASSIGNMENT EXPRESSIONS (*ptr = val, arr[i] = val, etc.)
 // ============================================================================
 
-VariableDeclaration *create_variable_declaration(Type *type, const string &name,
-                                                 Expression *init)
+GeneralAssignmentExpression::GeneralAssignmentExpression(Expression *lhs_expr, Expression *rhs_expr)
+    : lhs(lhs_expr), rhs(rhs_expr)
 {
-    return new VariableDeclaration(type, name, init);
+}
+
+GeneralAssignmentExpression::~GeneralAssignmentExpression()
+{
+    delete lhs;
+    delete rhs;
+}
+
+string GeneralAssignmentExpression::to_string() const
+{
+    return lhs->to_string() + " = " + rhs->to_string();
+}
+
+void GeneralAssignmentExpression::generate_tac()
+{
+    // Generate code for both sides
+    lhs->generate_tac();
+    rhs->generate_tac();
+
+    // Combine code
+    code = lhs->code;
+    code.insert(code.end(), rhs->code.begin(), rhs->code.end());
+
+    // Type checking
+    if (!lhs->type || !rhs->type)
+    {
+        fprintf(stderr, "[Type Error] Line %d: Missing type information in assignment\n", line_no);
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+
+    if (lhs->type->is_error() || rhs->type->is_error())
+    {
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+
+    // Check if LHS is a dereference operation (*ptr = val)
+    UnaryExpression *unary_lhs = dynamic_cast<UnaryExpression *>(lhs);
+    if (unary_lhs && unary_lhs->op == TAC_DEREF)
+    {
+        // Store through pointer: *ptr = value
+        // The LHS already computed the pointer address in its result
+        // We need to use TAC_DEREF_STORE
+
+        // Type compatibility check
+        if (lhs->type->base_type != rhs->type->base_type)
+        {
+            fprintf(stderr, "[Type Warning] Line %d: Assignment between incompatible types (%s = %s)\n",
+                    line_no, lhs->type->to_string().c_str(), rhs->type->to_string().c_str());
+        }
+
+        // Generate: *ptr = rhs_value
+        // We need the pointer (from the dereference's operand)
+        TACOperand ptr_operand = *unary_lhs->expr->result; // The pointer itself
+        tacGen.emit(TAC_DEREF_STORE, ptr_operand, *rhs->result);
+        code.push_back(tacGen.getCode().back());
+
+        // Result type is the LHS type
+        type = new Type(*lhs->type);
+        result = new TACOperand(*rhs->result); // Result is the assigned value
+    }
+    // Check if LHS is an array access (arr[i] = val)
+    else if (ArrayAccessExpression *array_lhs = dynamic_cast<ArrayAccessExpression *>(lhs))
+    {
+        // Store to array element: arr[i] = value
+        // The ArrayAccessExpression already calculated the address
+        // We need to extract the address (before the final dereference)
+
+        // Type compatibility check
+        if (lhs->type->base_type != rhs->type->base_type)
+        {
+            fprintf(stderr, "[Type Warning] Line %d: Assignment between incompatible types (%s = %s)\n",
+                    line_no, lhs->type->to_string().c_str(), rhs->type->to_string().c_str());
+        }
+
+        // The ArrayAccessExpression generated:
+        // t1 = index * elem_size
+        // t2 = array + t1
+        // t3 = *t2
+        // We need to use t2 (the address) for storing
+
+        // Re-calculate the address (we need t2 from array access)
+        // Get the last 3 instructions from array code
+        if (array_lhs->code.size() >= 3)
+        {
+            // The second-to-last instruction has the address in its result
+            TACInstruction *addr_instr = array_lhs->code[array_lhs->code.size() - 2];
+            TACOperand addr = addr_instr->result;
+
+            // Generate: *addr = rhs_value
+            tacGen.emit(TAC_DEREF_STORE, addr, *rhs->result);
+            code.push_back(tacGen.getCode().back());
+        }
+
+        // Result type is the LHS type
+        type = new Type(*lhs->type);
+        result = new TACOperand(*rhs->result); // Result is the assigned value
+    }
+    else
+    {
+        // Other complex lvalues not yet supported
+        fprintf(stderr, "[Error] Line %d: Complex assignment LHS type not yet supported\n", line_no);
+        type = new Type(TYPE_ERROR);
+    }
+}
+
+GeneralAssignmentExpression *create_general_assignment_expression(Expression *lhs, Expression *rhs)
+{
+    return new GeneralAssignmentExpression(lhs, rhs);
+}
+
+// ============================================================================
+// ARRAY ACCESS EXPRESSIONS (arr[index])
+// ============================================================================
+
+ArrayAccessExpression::ArrayAccessExpression(Expression *arr, Expression *idx)
+    : array(arr), index(idx)
+{
+}
+
+ArrayAccessExpression::~ArrayAccessExpression()
+{
+    delete array;
+    delete index;
+}
+
+string ArrayAccessExpression::to_string() const
+{
+    return array->to_string() + "[" + index->to_string() + "]";
+}
+
+void ArrayAccessExpression::generate_tac()
+{
+    // Generate code for array and index
+    array->generate_tac();
+    index->generate_tac();
+
+    // Combine code
+    code = array->code;
+    code.insert(code.end(), index->code.begin(), index->code.end());
+
+    // Type checking
+    if (!array->type || !index->type)
+    {
+        fprintf(stderr, "[Type Error] Line %d: Missing type information in array access\n", line_no);
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+
+    if (array->type->is_error() || index->type->is_error())
+    {
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+
+    // Check that array is actually an array or pointer
+    if (!array->type->is_array && !array->type->is_pointer())
+    {
+        fprintf(stderr, "[Type Error] Line %d: Subscripted value is not an array or pointer (type: %s)\n",
+                line_no, array->type->to_string().c_str());
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+
+    // Check that index is an integer type
+    if (!index->type->is_integer())
+    {
+        fprintf(stderr, "[Type Error] Line %d: Array subscript must be an integer type\n", line_no);
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+
+    // Determine element size
+    int elem_size = array->type->get_element_size();
+
+    // Calculate result type (reduce array dimension or pointer level)
+    type = new Type(*array->type);
+    if (type->is_array)
+    {
+        type->array_dim--;
+        if (!type->array_sizes.empty())
+        {
+            type->array_sizes.erase(type->array_sizes.begin());
+        }
+        if (type->array_dim == 0)
+        {
+            type->is_array = false;
+        }
+    }
+    else if (type->pointer_level > 0)
+    {
+        type->pointer_level--;
+        if (type->pointer_level == 0)
+        {
+            // No longer a pointer after dereferencing
+        }
+    }
+
+    // TAC Generation: arr[i] = *(arr + i * elem_size)
+    // BUT: If result is still an array, don't dereference (just return address)
+
+    // Step 1: t1 = index * elem_size
+    TACOperand t1 = tacGen.newTemp();
+    TACOperand elem_size_op(TACOperand::OPERAND_CONSTANT, std::to_string(elem_size));
+    tacGen.emit(TAC_MUL, t1, *index->result, elem_size_op);
+    code.push_back(tacGen.getCode().back());
+
+    // Step 2: t2 = array + t1 (calculate address)
+    TACOperand t2 = tacGen.newTemp();
+    tacGen.emit(TAC_ADD, t2, *array->result, t1);
+    code.push_back(tacGen.getCode().back());
+
+    // Step 3: Dereference ONLY if result is a scalar (not an array)
+    if (type->is_array || type->pointer_level > 0)
+    {
+        // Result is still an array or pointer - just return the address
+        result = new TACOperand(t2);
+    }
+    else
+    {
+        // Result is a scalar - dereference to get the value
+        TACOperand t3 = tacGen.newTemp();
+        result = new TACOperand(t3);
+        tacGen.emit(TAC_DEREF, *result, t2);
+        code.push_back(tacGen.getCode().back());
+    }
+}
+
+ArrayAccessExpression *create_array_access_expression(Expression *array, Expression *index)
+{
+    return new ArrayAccessExpression(array, index);
 }

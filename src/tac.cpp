@@ -73,6 +73,18 @@ string TACInstruction::to_string() const
         ss << result.to_string() << " = " << result.to_string() << " - 1";
         break;
 
+    case TAC_ADDR_OF:
+        ss << result.to_string() << " = &" << arg1.to_string();
+        break;
+
+    case TAC_DEREF:
+        ss << result.to_string() << " = *" << arg1.to_string();
+        break;
+
+    case TAC_DEREF_STORE:
+        ss << "*" << result.to_string() << " = " << arg1.to_string();
+        break;
+
     case TAC_BITWISE_AND:
         ss << result.to_string() << " = " << arg1.to_string()
            << " & " << arg2.to_string();
@@ -188,7 +200,7 @@ TACGenerator::~TACGenerator()
 TACOperand TACGenerator::newTemp()
 {
     stringstream ss;
-    ss << "#t" << temp_counter++;
+    ss << "_t" << temp_counter++;
     return TACOperand(TACOperand::OPERAND_TEMP, ss.str());
 }
 

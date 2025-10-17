@@ -2,6 +2,7 @@
 #define SYMBOL_TABLE_H
 
 #include <string>
+#include <vector>
 #include <unordered_map>
 #include <list>
 
@@ -23,18 +24,28 @@ public:
     int pointer_level; // 0 = not pointer, 1 = *, 2 = **, etc.
     bool is_const;
 
-    Type() : base_type(TYPE_ERROR), pointer_level(0), is_const(false) {}
+    // Array support
+    bool is_array;
+    int array_dim;                // Number of dimensions (0 for non-array)
+    std::vector<int> array_sizes; // Size of each dimension [5][3][2]
+
+    Type() : base_type(TYPE_ERROR), pointer_level(0), is_const(false),
+             is_array(false), array_dim(0) {}
     Type(PrimitiveType bt, int ptr = 0, bool c = false)
-        : base_type(bt), pointer_level(ptr), is_const(c) {}
+        : base_type(bt), pointer_level(ptr), is_const(c),
+          is_array(false), array_dim(0) {}
 
     std::string to_string() const;
-    int get_size() const; // Size in bytes
+    int get_size() const;         // Size in bytes for a single element
+    int get_total_size() const;   // Total size including all array elements
+    int get_element_size() const; // Size of element for pointer/array arithmetic
 
     // Phase 1: Type checking helper methods
     // These methods support basic type compatibility checking
     bool is_numeric() const;                    // int, float, or char (all arithmetic types)
     bool is_integer() const;                    // int or char (for %, bitwise ops)
     bool is_error() const;                      // Check if this is an error type
+    bool is_pointer() const;                    // Check if this is a pointer type
     Type promote_with(const Type &other) const; // Get promoted type for binary ops
 };
 
@@ -58,7 +69,8 @@ private:
     // Hash table with list for handling scope/shadowing
     std::unordered_map<std::string, std::list<Symbol *>> table;
 
-    int currentScope;
+    int currentScope; // Current active scope level for lookups
+    int scopeCounter; // Monotonically increasing scope ID (never reused)
     int currentOffset;
 
 public:
@@ -72,6 +84,7 @@ public:
     // Scope management
     void enterScope();
     void exitScope();
+    void exitScopeKeepSymbols(); // Exit scope but keep symbols for TAC generation
 
     // Utilities
     void print() const;
