@@ -183,6 +183,14 @@ string TACInstruction::to_string() const
         else
             ss << "ifFalse " << arg1.to_string() << " goto [BACKPATCH]";
         break;
+    case TAC_RETURN:
+        if (!arg1.is_empty())
+            ss << "return " << arg1.to_string();
+        else
+            ss << "return";
+        break;
+
+
     }
 
     return ss.str();

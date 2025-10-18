@@ -290,6 +290,29 @@ public:
 };
 
 /**
+ * Return Statement - Return from function
+ * 
+ * Syntax: return expression; or return;
+ * Semantics: Type of expression must match function return type
+ * 
+ * generate_tac():
+ * - If expression present, generate its code
+ * - Emit TAC_RETURN instruction with expression result (or empty for void) 
+ */
+class ReturnStatement : public Statement
+{
+    public:
+    Expression *expr;
+
+    ReturnStatement(Expression *e = nullptr);
+    virtual ~ReturnStatement();
+
+    std::string to_string() const override;
+    void generate_tac() override;
+
+};
+
+/**
  * Declaration Statement - Wraps a Declaration for use as a Statement
  *
  * Used primarily in for-loop initialization:
@@ -480,5 +503,6 @@ CompoundStatement *create_compound_statement();
 CaseLabel *create_case_label(Expression *value, Statement *stmt);
 DefaultLabel *create_default_label(Statement *stmt);
 SwitchStatement *create_switch_statement(Expression *expr, Statement *body);
+ReturnStatement *create_return_statement(Expression *expr = nullptr);
 
 #endif // STATEMENT_H

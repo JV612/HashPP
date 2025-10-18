@@ -12,6 +12,12 @@ using namespace std;
 static int loop_depth = 0;
 
 // ============================================================================
+// Static variable to track current function return type for return validation
+// ============================================================================
+// Current function return type (value) is defined in ansic.y
+extern Type current_function_return_type;
+
+// ============================================================================
 // Statement Implementation
 // ============================================================================
 // This file contains implementations for all statement node types:
@@ -1111,4 +1117,106 @@ DefaultLabel *create_default_label(Statement *stmt)
 SwitchStatement *create_switch_statement(Expression *expr, Statement *body)
 {
     return new SwitchStatement(expr, body);
+}
+
+// ============================================================================
+// ReturnStatement - return [expr];
+// ============================================================================
+
+ReturnStatement::ReturnStatement(Expression *e)
+    : expr(e)
+{
+}
+
+ReturnStatement::~ReturnStatement()
+{
+    if (expr)
+        delete expr;
+}
+
+string ReturnStatement::to_string() const
+{
+    if (expr)
+        return "return " + expr->to_string() + ";";
+    return "return;";
+}
+
+void ReturnStatement::generate_tac()
+{
+    // Check if we're inside a function (current_function_return_type should be set)
+    if (current_function_return_type.base_type == TYPE_ERROR)
+    {
+        fprintf(stderr, "[Error] Line %d: Return statement outside of function\n", line_no);
+        return;
+    }
+
+    // Case 1: void function with return expression
+    if (current_function_return_type.base_type == TYPE_VOID && expr != nullptr)
+    {
+        fprintf(stderr, "[Error] Line %d: void function cannot return a value\n", line_no);
+        return;
+    }
+
+    // Case 2: non-void function without return expression
+    if (current_function_return_type.base_type != TYPE_VOID && expr == nullptr)
+    {
+        fprintf(stderr, "[Error] Line %d: non-void function must return a value\n", line_no);
+        return;
+    }
+
+    if (expr)
+    {
+        // Generate TAC for expression first so expr->type is set
+        expr->generate_tac();
+        code = expr->code;
+
+        // Type check: compare expr->type against current_function_return_type (value)
+        if (expr->type)
+        {
+            // Check for allowed promotions manually (Phase 1 rules)
+            bool compatible = false;
+
+            // Exact match
+            if (expr->type->base_type == current_function_return_type.base_type)
+            {
+                compatible = true;
+            }
+            // Char to int promotion
+            else if (expr->type->base_type == TYPE_CHAR && current_function_return_type.base_type == TYPE_INT)
+            {
+                compatible = true;
+            }
+            // Int to float promotion
+            else if (expr->type->is_integer() && current_function_return_type.base_type == TYPE_FLOAT)
+            {
+                compatible = true;
+            }
+            // Integer types to each other (int, char)
+            else if (expr->type->is_integer() && current_function_return_type.is_integer())
+            {
+                compatible = true;
+            }
+
+            if (!compatible)
+            {
+                fprintf(stderr, "[Type Error] Line %d: Cannot return type '%s' from function expecting '%s'\n",
+                        line_no, expr->type->to_string().c_str(), current_function_return_type.to_string().c_str());
+            }
+        }
+
+        tacGen.emit(TAC_RETURN, TACOperand(), *expr->result);
+        code.push_back(tacGen.getCode().back());
+    }
+    else
+    {
+        tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
+        code.push_back(tacGen.getCode().back());
+    }
+
+    printf("[AST] ReturnStatement: Generated TAC for return statement\n");
+}
+
+ReturnStatement *create_return_statement(Expression *expr)
+{
+    return new ReturnStatement(expr);
 }

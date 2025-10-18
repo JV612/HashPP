@@ -80,7 +80,8 @@ enum TACOp
     TAC_IF_GOTO,       // if x goto L1
     TAC_IF_FALSE_GOTO, // ifFalse x goto L1
 
-    // Future: Function calls, etc.
+    // Function calls and return 
+    TAC_RETURN,        // return
 };
 
 // TAC Instruction - one line of TAC

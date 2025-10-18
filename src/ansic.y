@@ -15,10 +15,21 @@ extern int yylineno;
 // Current type being declared
 Type current_type;
 
+// Current function return type (value). TYPE_ERROR sentinel means "no active function".
+Type current_function_return_type;
+
 // Track pointer levels and array dimensions for current declarator
 int current_pointer_level = 0;
 bool current_is_array = false;
 std::vector<int> current_array_sizes;
+
+// Snapshot of function header info captured when parsing a function declarator
+std::string pending_function_name;
+Type pending_function_return_type;
+bool pending_function_header = false;
+
+// Collect function parameters during parsing; insert at function-body scope entry
+std::vector<std::pair<std::string, Type>> pending_function_params;
 
 %}
 
@@ -632,15 +643,22 @@ direct_declarator
             current_is_array = true;
             $$ = $1;
         }
-    | direct_declarator '(' parameter_type_list ')' {
-          $$ = $1;
-      }
-    | direct_declarator '(' identifier_list ')' {
-          $$ = $1;
-      }
-    | direct_declarator '(' ')' {
-          $$ = $1;
-      }
+        | direct_declarator '(' parameter_type_list ')' {
+                    $$ = $1;
+                    // Snapshot function header: name and return type (base + pointer level)
+                    pending_function_header = true;
+                    pending_function_return_type = current_type;
+                    pending_function_return_type.pointer_level = current_pointer_level;
+                    if ($1) pending_function_name = std::string($1);
+            }
+
+        | direct_declarator '(' ')' {
+                    $$ = $1;
+                    pending_function_header = true;
+                    pending_function_return_type = current_type;
+                    pending_function_return_type.pointer_level = current_pointer_level;
+                    if ($1) pending_function_name = std::string($1);
+            }
     ;
 
 
@@ -672,7 +690,22 @@ parameter_list
     
 parameter_declaration
     : declaration_specifiers declarator {
+          // $1 sets current_type; $2 is the parameter name
           $$ = $2;
+          if ($2) {
+              Type param_type = current_type;
+              param_type.pointer_level = current_pointer_level;
+              param_type.is_array = current_is_array;
+              param_type.array_dim = current_array_sizes.size();
+              param_type.array_sizes = current_array_sizes;
+
+              // Reset declarator modifiers for safety
+              current_pointer_level = 0;
+              current_is_array = false;
+              current_array_sizes.clear();
+
+              pending_function_params.emplace_back(std::string($2), param_type);
+          }
       }
     | declaration_specifiers abstract_declarator
     | declaration_specifiers
@@ -767,6 +800,13 @@ compound_statement
         { 
             /* Enter new scope when opening brace */
             symbolTable.enterScope(); 
+            /* If entering a function body, insert any pending parameters */
+            if (!pending_function_params.empty()) {
+                for (auto &pp : pending_function_params) {
+                    symbolTable.insert(pp.first, pp.second);
+                }
+                pending_function_params.clear();
+            }
         }
       '}'
         { 
@@ -778,6 +818,13 @@ compound_statement
         { 
             /* Enter new scope when opening brace */
             symbolTable.enterScope(); 
+            /* If entering a function body, insert any pending parameters */
+            if (!pending_function_params.empty()) {
+                for (auto &pp : pending_function_params) {
+                    symbolTable.insert(pp.first, pp.second);
+                }
+                pending_function_params.clear();
+            }
         }
       statement_list '}'
         { 
@@ -888,9 +935,9 @@ jump_statement
     | BREAK ';'
         { $$ = create_break_statement(); }
     | RETURN ';'
-        { $$ = nullptr; /* Not implemented */ }
+        { $$ = create_return_statement(nullptr); }
     | RETURN expression ';'
-        { $$ = nullptr; /* Not implemented */ }
+        { $$ = create_return_statement($2); }
     ;
 
 translation_unit
@@ -902,43 +949,99 @@ external_declaration
 	: function_definition 
 	| declaration
 	;
-
+    
 function_definition
-	: declaration_specifiers declarator declaration_list compound_statement
+    : declaration_specifiers declarator declaration_list compound_statement
         {
+            // Set current function return type using header snapshot to avoid later contamination
+            if (pending_function_header) {
+                current_function_return_type = pending_function_return_type;
+            } else {
+                current_function_return_type = current_type;
+                current_function_return_type.pointer_level = current_pointer_level;
+            }
+            // Emit function entry label with function name
+            tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL, std::string($2)), TACOperand());
+            
             if ($4) {
                 printf("\n[Function] Generating TAC for function body\n");
                 $4->generate_tac();
             }
+            
+            // Reset function return type (no active function)
+            current_function_return_type = Type(TYPE_ERROR);
+            // Clear header snapshot
+            pending_function_header = false;
+            pending_function_name.clear();
         }
-	| declaration_specifiers declarator compound_statement
+    | declaration_specifiers declarator compound_statement
         {
+            // Set current function return type using header snapshot to avoid later contamination
+            if (pending_function_header) {
+                current_function_return_type = pending_function_return_type;
+            } else {
+                current_function_return_type = current_type;
+                current_function_return_type.pointer_level = current_pointer_level;
+            }
+            // Emit function entry label with function name
+            tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL, std::string($2)), TACOperand());
+            
             if ($3) {
                 printf("\n[Function] Generating TAC for function body\n");
                 $3->generate_tac();
                 // Backpatch any remaining nextlist to end of function
                 backpatch($3->nextlist, tacGen.nextinstr());
             }
+            
+            // Reset function return type (no active function)
+            current_function_return_type = Type(TYPE_ERROR);
+            // Clear header snapshot
+            pending_function_header = false;
+            pending_function_name.clear();
         }
-	| declarator declaration_list compound_statement
+    | declarator declaration_list compound_statement
         {
+            // Old-style C function - assume int return type
+            current_function_return_type = Type(TYPE_INT);
+            current_function_return_type.pointer_level = current_pointer_level;
+            // Emit function entry label with function name
+            tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL, std::string($1)), TACOperand());
+            
             if ($3) {
                 printf("\n[Function] Generating TAC for function body\n");
                 $3->generate_tac();
                 // Backpatch any remaining nextlist to end of function
                 backpatch($3->nextlist, tacGen.nextinstr());
             }
+            
+            // Reset function return type (no active function)
+            current_function_return_type = Type(TYPE_ERROR);
+            // Clear header snapshot (not used here, but reset for safety)
+            pending_function_header = false;
+            pending_function_name.clear();
         }
-	| declarator compound_statement
+    | declarator compound_statement
         {
+            // Old-style C function - assume int return type
+            current_function_return_type = Type(TYPE_INT);
+            current_function_return_type.pointer_level = current_pointer_level;
+            // Emit function entry label with function name
+            tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL, std::string($1)), TACOperand());
+            
             if ($2) {
                 printf("\n[Function] Generating TAC for function body\n");
                 $2->generate_tac();
                 // Backpatch any remaining nextlist to end of function
                 backpatch($2->nextlist, tacGen.nextinstr());
             }
+            
+            // Reset function return type (no active function)
+            current_function_return_type = Type(TYPE_ERROR);
+            // Clear header snapshot (not used here, but reset for safety)
+            pending_function_header = false;
+            pending_function_name.clear();
         }
-	;
+    ;
 
 %%
 
@@ -967,7 +1070,7 @@ int main(int argc, char *argv[]) {
     
     int parse_ok = (yyparse() == 0);
 
-    if (parse_ok) {
+    if (parse_ok && semantic_error_count == 0) {
         printf("\n✓ Parsing successful!\n");
         
         symbolTable.print();
@@ -976,6 +1079,9 @@ int main(int argc, char *argv[]) {
         
         return 0;
     } else {
+        if (semantic_error_count > 0) {
+            fprintf(stderr, "\n✗ Semantic errors: %d\n", semantic_error_count);
+        }
         printf("\n✗ Parsing failed!\n");
         return 1;
     }

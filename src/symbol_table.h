@@ -94,4 +94,7 @@ public:
 // Global symbol table instance
 extern SymbolTable symbolTable;
 
+// Global semantic error counter (increment on semantic errors like redeclaration)
+extern int semantic_error_count;
+
 #endif // SYMBOL_TABLE_H

@@ -6,6 +6,7 @@ using namespace std;
 
 // Global symbol table instance
 SymbolTable symbolTable;
+int semantic_error_count = 0;
 
 // ============================================================================
 // Type Implementation
@@ -230,8 +231,9 @@ void SymbolTable::insert(const string &name, Type type)
         {
             if (sym->scope == currentScope)
             {
-                cerr << "Error: Redeclaration of '" << name
-                     << "' in scope " << currentScope << endl;
+             cerr << "[Semantic Error] Redeclaration of '" << name
+                 << "' in scope " << currentScope << "\n";
+             semantic_error_count++;
                 return;
             }
         }
