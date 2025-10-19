@@ -42,7 +42,7 @@ PrimaryExpression::PrimaryExpression(const string &id_name)
     : prim_type(PRIM_IDENTIFIER), name(id_name), int_value(0), char_value('\0'), float_value(0.0), expr(nullptr), symbol_ref(nullptr)
 {
     // Look up symbol during construction (while in correct scope)
-    symbol_ref = symbolTable.lookup(id_name);
+    symbol_ref = lookup_symbol(id_name);
 }
 
 PrimaryExpression::PrimaryExpression(int value)
@@ -114,11 +114,14 @@ void PrimaryExpression::generate_tac()
         {
             cerr << "Error: Undefined variable '" << name << "'" << endl;
             result = new TACOperand(TACOperand::OPERAND_IDENTIFIER, name);
+            // Propagate semantic error and mark type as error
+            semantic_error_count++;
+            type = new Type(TYPE_ERROR);
         }
         else
         {
-            // Use mangled name with scope: varname_scope
-            string mangled_name = name + "_" + std::to_string(sym->scope);
+            // Use mangled name with scope: name_scope
+            string mangled_name = mangle_for_tac(name, sym);
             result = new TACOperand(TACOperand::OPERAND_IDENTIFIER, mangled_name);
             type = new Type(sym->type);
         }
@@ -627,6 +630,7 @@ void UnaryExpression::generate_tac()
         {
             fprintf(stderr, "[Type Error] Line %d: Cannot take address of non-lvalue (not a variable)\n",
                     line_no);
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
         }
@@ -799,7 +803,7 @@ AssignmentExpression::AssignmentExpression(const string &var, Expression *rhs_ex
     : lhs_name(var), rhs(rhs_expr), lhs_symbol(nullptr)
 {
     // Look up LHS symbol during construction (while in correct scope)
-    lhs_symbol = symbolTable.lookup(var);
+    lhs_symbol = lookup_symbol(var);
 }
 
 AssignmentExpression::~AssignmentExpression()
@@ -843,28 +847,40 @@ void AssignmentExpression::generate_tac()
     {
         fprintf(stderr, "[Type Error] Line %d: Undefined variable '%s'\n",
                 line_no, lhs_name.c_str());
+        semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
     }
 
-    // Check type compatibility (warning for mismatches, like C)
-    // Phase 1: We allow assignments between different numeric types but warn
-    if (sym->type.base_type != rhs->type->base_type)
+    // Check type compatibility with full pointer/array checking
+    bool compatible = false;
+    
+    // First check: exact type match (including pointer levels and array status)
+    if (sym->type.base_type == rhs->type->base_type && 
+        sym->type.pointer_level == rhs->type->pointer_level &&
+        sym->type.is_array == rhs->type->is_array)
     {
-        // Only warn if both are numeric (allow implicit conversions)
-        if (sym->type.is_numeric() && rhs->type->is_numeric())
-        {
-            fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in assignment from %s to %s\n",
-                    line_no, rhs->type->to_string().c_str(), sym->type.to_string().c_str());
-        }
-        else
-        {
-            // Error for non-numeric type mismatches
-            fprintf(stderr, "[Type Error] Line %d: Cannot assign %s to %s\n",
-                    line_no, rhs->type->to_string().c_str(), sym->type.to_string().c_str());
-            type = new Type(TYPE_ERROR);
-            return;
-        }
+        compatible = true;
+    }
+    // Second check: numeric type conversions (only for non-pointer types)
+    else if (sym->type.pointer_level == 0 && rhs->type->pointer_level == 0 &&
+             !sym->type.is_array && !rhs->type->is_array &&
+             sym->type.is_numeric() && rhs->type->is_numeric())
+    {
+        // Allow implicit numeric conversions but warn
+        compatible = true;
+        fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in assignment from %s to %s\n",
+                line_no, rhs->type->to_string().c_str(), sym->type.to_string().c_str());
+    }
+    
+    // If not compatible, it's an error
+    if (!compatible)
+    {
+        fprintf(stderr, "[Type Error] Line %d: Cannot assign %s to %s\n",
+                line_no, rhs->type->to_string().c_str(), sym->type.to_string().c_str());
+        semantic_error_count++;
+        type = new Type(TYPE_ERROR);
+        return;
     }
 
     // Assignment type is the LHS type
@@ -878,7 +894,7 @@ void AssignmentExpression::generate_tac()
     code = rhs->code;
 
     // Create operand for LHS with mangled name: varname_scope
-    string mangled_lhs = lhs_name + "_" + std::to_string(sym->scope);
+    string mangled_lhs = mangle_for_tac(lhs_name, sym);
     TACOperand lhs(TACOperand::OPERAND_IDENTIFIER, mangled_lhs);
 
     // Emit assignment
@@ -1208,4 +1224,73 @@ void ArrayAccessExpression::generate_tac()
 ArrayAccessExpression *create_array_access_expression(Expression *array, Expression *index)
 {
     return new ArrayAccessExpression(array, index);
+}
+
+// ============================================================================
+// FUNCTION CALL EXPRESSIONS
+// ============================================================================
+
+void CallExpression::generate_tac()
+{
+    code.clear();
+    std::vector<Type> argTypes;
+    argTypes.reserve(args.size());
+
+    // Evaluate arguments left-to-right, collect code and types
+    for (auto *e : args)
+    {
+        e->generate_tac();
+        code.insert(code.end(), e->code.begin(), e->code.end());
+        if (e->type)
+            argTypes.push_back(*e->type);
+        else
+            argTypes.push_back(Type(TYPE_ERROR));
+    }
+
+    int match = find_function_match(func_name, argTypes);
+    if (match < 0)
+    {
+        fprintf(stderr, "[Type Error] Line %d: No matching function '%s' for given argument types\n", line_no, func_name.c_str());
+        semantic_error_count++;
+        type = new Type(TYPE_ERROR);
+        // Still emit params and a call to keep TAC flow, with no result
+    }
+
+    // Emit params in reverse or forward? We'll use right-to-left is common, but here left-to-right
+    for (auto *e : args)
+    {
+        tacGen.emit(TAC_PARAM, TACOperand(), *e->result);
+        code.push_back(tacGen.getCode().back());
+    }
+
+    // Emit call - use mangled function name if we found a match
+    std::string call_name = func_name;  // default to original name
+    if (match >= 0) {
+        call_name = mangle_function_for_tac(func_name, function_signatures[match]);
+    }
+    TACOperand funcOp(TACOperand::OPERAND_LABEL, call_name);
+    TACOperand nArgs(TACOperand::OPERAND_CONSTANT, std::to_string(args.size()));
+
+    // If we have a signature, set return type
+    Type retT = (match >= 0) ? function_signatures[match].returnType : Type(TYPE_ERROR);
+    if (retT.base_type != TYPE_VOID)
+    {
+        TACOperand temp = tacGen.newTemp();
+        result = new TACOperand(temp);
+        tacGen.emit(TAC_CALL, *result, funcOp, nArgs);
+        code.push_back(tacGen.getCode().back());
+        type = new Type(retT);
+    }
+    else
+    {
+        result = new TACOperand();
+        tacGen.emit(TAC_CALL, TACOperand(), funcOp, nArgs);
+        code.push_back(tacGen.getCode().back());
+        type = new Type(TYPE_VOID);
+    }
+}
+
+CallExpression *create_call_expression(const std::string &name, const std::vector<Expression*> &args)
+{
+    return new CallExpression(name, args);
 }

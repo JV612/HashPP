@@ -82,6 +82,8 @@ enum TACOp
 
     // Function calls and return 
     TAC_RETURN,        // return
+    TAC_PARAM,         // param x
+    TAC_CALL,          // r = call f, nArgs
 };
 
 // TAC Instruction - one line of TAC

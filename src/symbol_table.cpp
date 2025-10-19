@@ -4,9 +4,15 @@
 
 using namespace std;
 
-// Global symbol table instance
-SymbolTable symbolTable;
+// Global symbol table stack
+
+vector<SymbolTable *> symbolTableStack;
+int next_scope_id = 0;
+
 int semantic_error_count = 0;
+bool current_function_has_return = false;
+bool debug = false;
+std::vector<FunctionSignature> function_signatures;
 
 // ============================================================================
 // Type Implementation
@@ -207,7 +213,10 @@ Type Type::promote_with(const Type &other) const
 // SymbolTable Implementation
 // ============================================================================
 
-SymbolTable::SymbolTable() : currentScope(0), scopeCounter(0), currentOffset(0) {}
+SymbolTable::SymbolTable() : Scopelevel(0), scopeCounter(0), currentOffset(0), Parent(nullptr) 
+{
+}
+    
 
 SymbolTable::~SymbolTable()
 {
@@ -221,7 +230,7 @@ SymbolTable::~SymbolTable()
     }
 }
 
-void SymbolTable::insert(const string &name, Type type)
+Symbol *SymbolTable::insert(const string &name, Type type)
 {
     // Check for redeclaration in current scope
     auto it = table.find(name);
@@ -229,27 +238,31 @@ void SymbolTable::insert(const string &name, Type type)
     {
         for (Symbol *sym : it->second)
         {
-            if (sym->scope == currentScope)
+            if (sym->scope == Scopelevel)
             {
              cerr << "[Semantic Error] Redeclaration of '" << name
-                 << "' in scope " << currentScope << "\n";
+                 << "' in scope " << Scopelevel << "\n";
              semantic_error_count++;
-                return;
+                return nullptr;
             }
         }
     }
 
     // Create new symbol and add to front of list (most recent first)
-    Symbol *sym = new Symbol(name, type, currentScope, currentOffset);
+    Symbol *sym = new Symbol(name, type, Scopelevel, currentOffset);
     table[name].push_front(sym);
 
     // Update offset for next variable (use total size for arrays)
     currentOffset += type.get_total_size();
 
-    cout << "[Symbol Table] Inserted: " << name
-         << " (type: " << type.to_string()
-         << ", scope: " << currentScope
-         << ", offset: " << sym->offset << ")" << endl;
+    if(debug) {
+        cout << "[Symbol Table] Inserted: " << name
+             << " (type: " << type.to_string()
+             << ", scope: " << Scopelevel
+             << ", offset: " << sym->offset << ")" << endl;
+    }
+
+    return sym;
 }
 
 Symbol *SymbolTable::lookup(const string &name)
@@ -260,102 +273,189 @@ Symbol *SymbolTable::lookup(const string &name)
         return nullptr;
     }
 
-    // During parsing (currentScope > 0): Return most recent symbol in current/outer scopes
-    // During TAC generation (currentScope == 0): Return symbol from innermost accessible scope
-    // The list is ordered with most recent (highest scope) first
-
-    if (currentScope > 0)
-    {
-        // Normal parsing: return first symbol with scope <= currentScope
-        for (Symbol *sym : it->second)
-        {
-            if (sym->scope <= currentScope)
-            {
-                return sym;
-            }
-        }
-    }
-    else
-    {
-        // TAC generation phase: all scopes exited
-        // Return the first symbol (most recent in list = highest scope)
-        // This gives proper shadowing semantics
-        if (!it->second.empty())
-        {
-            return it->second.front();
-        }
-    }
-
+    // Return the most recent symbol in this table for the name
+    if (!it->second.empty())
+        return it->second.front();
     return nullptr;
 }
 
-void SymbolTable::enterScope()
+// ============================================================================
+// Externalized scope management and recursive lookup
+// ============================================================================
+
+SymbolTable *current_scope()
 {
-    scopeCounter++;              // Increment unique scope ID
-    currentScope = scopeCounter; // Set as current scope
-    cout << "[Symbol Table] Entered scope " << currentScope << endl;
+    if (symbolTableStack.empty())
+        return nullptr;
+    return symbolTableStack.back();
 }
 
-void SymbolTable::exitScope()
+SymbolTable *push_scope(const std::string &functionName)
 {
-    if (currentScope == 0)
+    SymbolTable *parent = current_scope();
+    SymbolTable *child = new SymbolTable();
+    child->Parent = parent;
+    child->Scopelevel = ++next_scope_id; // unique scope id
+    child->FunctionName = functionName;
+    symbolTableStack.push_back(child);
+    if(debug) {
+        cout << "[Scope] Entered new scope " << child->Scopelevel
+             << (parent ? string(" (parent ") + to_string(parent->Scopelevel) + ")" : " (global)")
+             << endl;
+    }
+    return child;
+}
+
+void pop_scope()
+{
+    if (symbolTableStack.empty())
         return;
+    SymbolTable *top = symbolTableStack.back();
+    if(debug) cout << "[Scope] Exiting scope " << top->Scopelevel << " (keeping symbols)" << endl;
+    // Print the symbol table for the scope being popped
+    top->print();
+    symbolTableStack.pop_back();
+    // Do not delete 'top' so that symbols remain available for TAC
+}
 
-    cout << "[Symbol Table] Exiting scope " << currentScope << endl;
-
-    // Remove all symbols from current scope
-    for (auto it = table.begin(); it != table.end();)
+Symbol *lookup_symbol(const std::string &name)
+{
+    for (SymbolTable *st = current_scope(); st != nullptr; st = st->Parent)
     {
-        auto &symbolList = it->second;
+        Symbol *s = st->lookup(name);
+        if (s)
+            return s;
+    }
+    return nullptr;
+}
 
-        for (auto symIt = symbolList.begin(); symIt != symbolList.end();)
-        {
-            if ((*symIt)->scope == currentScope)
-            {
-                delete *symIt;
-                symIt = symbolList.erase(symIt);
-            }
-            else
-            {
-                ++symIt;
-            }
-        }
+SymbolTable *global_scope()
+{
+    if (symbolTableStack.empty())
+        return nullptr;
+    return symbolTableStack.front();
+}
 
-        // Remove entry if list is empty
-        if (symbolList.empty())
+std::string mangle_for_tac(const std::string &name, const Symbol *sym)
+{
+    if (!sym)
+        return name; // fallback if symbol missing
+    return name + "_" + std::to_string(sym->scope);
+}
+
+std::string mangle_function_for_tac(const std::string &name, const FunctionSignature &fs)
+{
+    if(&fs == nullptr)
+        return name;
+    else return name + "_" + std::to_string(fs.FunctionID);
+}
+
+// ===================== Function Registry =====================
+FunctionSignature *register_function(const std::string &name, const std::vector<Type> &params, const Type &retType)
+{
+
+    // first check if function with same name exists
+
+    int index = find_function_match(name, params);
+
+    if(index != -1) {
+        cerr << "[Semantic Error] Redeclaration of function '" << name << "' with same parameter types\n";
+        semantic_error_count++;
+        return nullptr;
+    }
+
+    // Find next unique FunctionID for overloading
+    int max_id = 0;
+    for (const auto &fs : function_signatures)
+    {
+        if (fs.name == name && fs.FunctionID >= max_id)
         {
-            it = table.erase(it);
-        }
-        else
-        {
-            ++it;
+            max_id = fs.FunctionID + 1;
         }
     }
 
-    currentScope--;
+    // Append new function signature
+    function_signatures.push_back(FunctionSignature{name, params, retType, max_id});
+
+    return &function_signatures.back();
 }
 
-void SymbolTable::exitScopeKeepSymbols()
+static bool type_compatible(const Type &expected, const Type &actual)
 {
-    if (currentScope == 0)
+    if (expected.is_error() || actual.is_error()) return false;
+    if (expected.is_pointer() || expected.is_array || actual.is_pointer() || actual.is_array)
+    {
+        // For now require exact pointer level and base type match
+        return expected.pointer_level == actual.pointer_level && expected.base_type == actual.base_type && expected.is_array == actual.is_array && expected.array_dim == actual.array_dim;
+    }
+    if (expected.base_type == actual.base_type) return true;
+    // Allow numeric promotions (char < int < float)
+    if (expected.is_numeric() && actual.is_numeric()) return true;
+    return false;
+}
+
+int find_function_match(const std::string &name, const std::vector<Type> &argTypes)
+{
+    for (size_t i = 0; i < function_signatures.size(); ++i)
+    {
+        const auto &fs = function_signatures[i];
+        if (fs.name != name) continue;
+        
+        if (fs.params.size() != argTypes.size()) continue;
+        bool ok = true;
+        for (size_t j = 0; j < argTypes.size(); ++j)
+        {
+            if (!type_compatible(fs.params[j], argTypes[j])) { ok = false; break; }
+        }
+        if (ok) return (int)i;
+    }
+
+    return -1;
+}
+
+void print_function_signatures()
+{
+    if (function_signatures.empty())
+    {
+        if(debug) cout << "\n[No Function Signatures Registered]\n"
+             << endl;
         return;
+    }
 
-    cout << "[Symbol Table] Exiting scope " << currentScope << " (keeping symbols for TAC generation)" << endl;
+    cout << "\n--- Function Signatures ---\n";
+    cout << left << setw(20) << "Function Name"
+         << setw(30) << "Parameter Types"
+         << setw(15) << "Return Type"
+         << setw(10) << "FunctionID" << endl;
+    cout << "---------------------------------------------------------------\n";
 
-    // Decrement scope level but DON'T remove symbols
-    // This allows TAC generation to access variables after parsing completes
-    // The lookup() function is modified to still find these symbols when currentScope < sym->scope
+    for (const auto &fs : function_signatures)
+    {
+        cout << left << setw(20) << fs.name;
 
-    // Note: In a full compiler with proper IR, you'd remove symbols here
-    // and keep variable info in the AST nodes themselves
-    currentScope--;
+        // Parameter types
+        string paramStr;
+        for (size_t i = 0; i < fs.params.size(); ++i)
+        {
+            paramStr += fs.params[i].to_string();
+            if (i < fs.params.size() - 1)
+                paramStr += ", ";
+        }
+        cout << setw(30) << paramStr;
+
+        cout << setw(15) << fs.returnType.to_string();
+        cout << setw(10) << fs.FunctionID << endl;
+    }
+
+    cout << "---------------------------------------------------------------\n"
+         << endl;
 }
 
 void SymbolTable::print() const
 {
     if (table.empty())
     {
-        cout << "\n[Symbol Table is empty]\n"
+        if(debug) cout << "\n[Symbol Table is empty]\n"
              << endl;
         return;
     }

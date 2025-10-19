@@ -182,7 +182,7 @@ void IfStatement::generate_tac()
         continuelist = then_stmt->continuelist;
     }
 
-    printf("[AST] IfStatement: Generated TAC with backpatching\n");
+    if(debug) printf("[AST] IfStatement: Generated TAC with backpatching\n");
 }
 
 // ============================================================================
@@ -266,7 +266,7 @@ void WhileStatement::generate_tac()
     // S.nextlist = B.falselist (exit loop when condition is false)
     nextlist = condition->falselist;
 
-    printf("[AST] WhileStatement: Generated TAC with backpatching\n");
+    if(debug) printf("[AST] WhileStatement: Generated TAC with backpatching\n");
 }
 
 // ============================================================================
@@ -346,7 +346,7 @@ void DoWhileStatement::generate_tac()
     // S.nextlist = B.falselist (exit when condition is false)
     nextlist = condition->falselist;
 
-    printf("[AST] DoWhileStatement: Generated TAC with backpatching\n");
+    if(debug) printf("[AST] DoWhileStatement: Generated TAC with backpatching\n");
 }
 
 // ============================================================================
@@ -432,7 +432,7 @@ void UntilStatement::generate_tac()
     // S.nextlist = B.truelist (exit loop when condition is TRUE)
     nextlist = condition->truelist;
 
-    printf("[AST] UntilStatement: Generated TAC with backpatching\n");
+    if(debug) printf("[AST] UntilStatement: Generated TAC with backpatching\n");
 }
 
 // ============================================================================
@@ -561,7 +561,7 @@ void ForStatement::generate_tac()
     // S.nextlist = exit_list
     nextlist = exit_list;
 
-    printf("[AST] ForStatement: Generated TAC with backpatching\n");
+    if(debug) printf("[AST] ForStatement: Generated TAC with backpatching\n");
 }
 
 // ============================================================================
@@ -596,7 +596,7 @@ void BreakStatement::generate_tac()
     // Add to breaklist (will be backpatched by enclosing loop to exit)
     breaklist = makelist(goto_instr);
 
-    printf("[AST] BreakStatement: Generated goto for break\n");
+    if(debug) printf("[AST] BreakStatement: Generated goto for break\n");
 }
 
 // ============================================================================
@@ -631,7 +631,7 @@ void ContinueStatement::generate_tac()
     // Add to continuelist (will be backpatched by enclosing loop to beginning/post)
     continuelist = makelist(goto_instr);
 
-    printf("[AST] ContinueStatement: Generated goto for continue\n");
+    if(debug) printf("[AST] ContinueStatement: Generated goto for continue\n");
 }
 
 // ============================================================================
@@ -664,7 +664,7 @@ void DeclarationStatement::generate_tac()
         code = declaration->code;
     }
     // No control flow, so nextlist stays empty
-    printf("[AST] DeclarationStatement: Generated TAC for wrapped declaration\n");
+    if(debug) printf("[AST] DeclarationStatement: Generated TAC for wrapped declaration\n");
 }
 
 // ============================================================================
@@ -693,13 +693,13 @@ void ExpressionStatement::generate_tac()
 {
     if (expr)
     {
-        printf("[ExpressionStatement] Generating TAC for expression\n");
+        if(debug) printf("[ExpressionStatement] Generating TAC for expression\n");
         expr->generate_tac();
         code = expr->code;
     }
     else
     {
-        printf("[ExpressionStatement] Empty statement (just semicolon)\n");
+        if(debug) printf("[ExpressionStatement] Empty statement (just semicolon)\n");
     }
 }
 
@@ -738,7 +738,7 @@ string CompoundStatement::to_string() const
 
 void CompoundStatement::generate_tac()
 {
-    printf("[CompoundStatement] Generating TAC for %zu statements\n", statements.size());
+    if(debug) printf("[CompoundStatement] Generating TAC for %zu statements\n", statements.size());
 
     InstructionList current_nextlist;
 
@@ -807,7 +807,7 @@ void CaseLabel::generate_tac()
     breaklist = statement->breaklist;
     continuelist = statement->continuelist;
 
-    printf("[AST] CaseLabel: Generated TAC for case label\n");
+    if(debug) printf("[AST] CaseLabel: Generated TAC for case label\n");
 }
 
 // ============================================================================
@@ -840,7 +840,7 @@ void DefaultLabel::generate_tac()
     breaklist = statement->breaklist;
     continuelist = statement->continuelist;
 
-    printf("[AST] DefaultLabel: Generated TAC for default label\n");
+    if(debug) printf("[AST] DefaultLabel: Generated TAC for default label\n");
 }
 
 // ============================================================================
@@ -911,7 +911,7 @@ void SwitchStatement::generate_tac()
     //   EXIT:
     // ========================================================================
 
-    printf("[AST] SwitchStatement: Generating TAC\n");
+    if(debug) printf("[AST] SwitchStatement: Generating TAC\n");
 
     // STEP 1: Type check - switch expression must be integer type
     switch_expr->generate_tac();
@@ -928,7 +928,7 @@ void SwitchStatement::generate_tac()
     default_label = -1;
     collect_labels(body);
 
-    printf("[AST] SwitchStatement: Found %zu case labels\n", case_labels.size());
+    if(debug) printf("[AST] SwitchStatement: Found %zu case labels\n", case_labels.size());
 
     // STEP 3: Start building our code - add switch expression evaluation
     code.insert(code.end(), switch_expr->code.begin(), switch_expr->code.end());
@@ -1046,7 +1046,7 @@ void SwitchStatement::generate_tac()
     // Switch statement's nextlist is empty
     nextlist.clear();
 
-    printf("[AST] SwitchStatement: Generated TAC with %zu cases, EXIT at line %d\n",
+    if(debug) printf("[AST] SwitchStatement: Generated TAC with %zu cases, EXIT at line %d\n",
            case_labels.size(), exit_label);
 }
 
@@ -1143,10 +1143,14 @@ string ReturnStatement::to_string() const
 
 void ReturnStatement::generate_tac()
 {
+    // Mark that current function has a return statement
+    current_function_has_return = true;
+    
     // Check if we're inside a function (current_function_return_type should be set)
     if (current_function_return_type.base_type == TYPE_ERROR)
     {
         fprintf(stderr, "[Error] Line %d: Return statement outside of function\n", line_no);
+        semantic_error_count++;
         return;
     }
 
@@ -1154,6 +1158,7 @@ void ReturnStatement::generate_tac()
     if (current_function_return_type.base_type == TYPE_VOID && expr != nullptr)
     {
         fprintf(stderr, "[Error] Line %d: void function cannot return a value\n", line_no);
+        semantic_error_count++;
         return;
     }
 
@@ -1161,6 +1166,7 @@ void ReturnStatement::generate_tac()
     if (current_function_return_type.base_type != TYPE_VOID && expr == nullptr)
     {
         fprintf(stderr, "[Error] Line %d: non-void function must return a value\n", line_no);
+        semantic_error_count++;
         return;
     }
 
@@ -1170,42 +1176,81 @@ void ReturnStatement::generate_tac()
         expr->generate_tac();
         code = expr->code;
 
-        // Type check: compare expr->type against current_function_return_type (value)
-        if (expr->type)
+    // Type check: compare expr->type against current_function_return_type (value)
+    if (expr->type)
         {
             // Check for allowed promotions manually (Phase 1 rules)
             bool compatible = false;
 
-            // Exact match
-            if (expr->type->base_type == current_function_return_type.base_type)
+            const Type &retT = current_function_return_type;
+            const Type &exprT = *expr->type;
+
+            // Pointer vs non-pointer must match
+            if (exprT.is_pointer() || exprT.is_array)
             {
-                compatible = true;
+                // For now, require function return to also be a pointer type with identical pointer level and base
+                if (retT.is_pointer() && !retT.is_array &&
+                    exprT.pointer_level == retT.pointer_level &&
+                    exprT.base_type == retT.base_type)
+                {
+                    compatible = true;
+                }
             }
-            // Char to int promotion
-            else if (expr->type->base_type == TYPE_CHAR && current_function_return_type.base_type == TYPE_INT)
+            else if (retT.is_pointer() || retT.is_array)
             {
-                compatible = true;
+                // Returning non-pointer to pointer return type - incompatible
+                compatible = false;
             }
-            // Int to float promotion
-            else if (expr->type->is_integer() && current_function_return_type.base_type == TYPE_FLOAT)
+            else
             {
-                compatible = true;
-            }
-            // Integer types to each other (int, char)
-            else if (expr->type->is_integer() && current_function_return_type.is_integer())
-            {
-                compatible = true;
+                // Neither side is a pointer: numeric compatibility
+                // Exact match on primitive base type
+                if (exprT.base_type == retT.base_type)
+                {
+                    compatible = true;
+                }
+                // Char to int promotion
+                else if (exprT.base_type == TYPE_CHAR && retT.base_type == TYPE_INT)
+                {
+                    compatible = true;
+                }
+                // Int to float promotion
+                else if (exprT.is_integer() && retT.base_type == TYPE_FLOAT)
+                {
+                    compatible = true;
+                }
+                // Integer types among themselves (int, char)
+                else if (exprT.is_integer() && retT.is_integer())
+                {
+                    compatible = true;
+                }
             }
 
             if (!compatible)
             {
                 fprintf(stderr, "[Type Error] Line %d: Cannot return type '%s' from function expecting '%s'\n",
-                        line_no, expr->type->to_string().c_str(), current_function_return_type.to_string().c_str());
+                        line_no, exprT.to_string().c_str(), retT.to_string().c_str());
+                semantic_error_count++;
             }
         }
-
-        tacGen.emit(TAC_RETURN, TACOperand(), *expr->result);
-        code.push_back(tacGen.getCode().back());
+        else
+        {
+            // Expression failed to produce a type (likely undefined identifier)
+            fprintf(stderr, "[Type Error] Line %d: return expression has no type (undefined or invalid)\n", line_no);
+            semantic_error_count++;
+        }
+        // Emit TAC only if we have a valid result operand
+        if (expr->result)
+        {
+            tacGen.emit(TAC_RETURN, TACOperand(), *expr->result);
+            code.push_back(tacGen.getCode().back());
+        }
+        else
+        {
+            // Fallback: emit a bare return to avoid dangling control flow
+            tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
+            code.push_back(tacGen.getCode().back());
+        }
     }
     else
     {
@@ -1213,7 +1258,7 @@ void ReturnStatement::generate_tac()
         code.push_back(tacGen.getCode().back());
     }
 
-    printf("[AST] ReturnStatement: Generated TAC for return statement\n");
+    if(debug) printf("[AST] ReturnStatement: Generated TAC for return statement\n");
 }
 
 ReturnStatement *create_return_statement(Expression *expr)

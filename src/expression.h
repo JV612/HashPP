@@ -216,6 +216,30 @@ public:
 };
 
 // ============================================================================
+// Function Call Expression - f(arg1, arg2, ...)
+// ============================================================================
+class CallExpression : public Expression
+{
+public:
+    std::string func_name;
+    std::vector<Expression*> args;
+
+    CallExpression(const std::string &name, const std::vector<Expression*> &a)
+        : func_name(name), args(a) {}
+    virtual ~CallExpression()
+    {
+        for (auto *e : args) delete e;
+    }
+
+    std::string to_string() const override {
+        return func_name + "(...)"; // simplified
+    }
+    void generate_tac() override;
+};
+
+CallExpression *create_call_expression(const std::string &name, const std::vector<Expression*> &args);
+
+// ============================================================================
 // Helper Functions - Expression Node Creation
 // ============================================================================
 

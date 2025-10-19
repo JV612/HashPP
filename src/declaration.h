@@ -69,6 +69,7 @@ class VariableDeclaration : public Declaration
 public:
     std::string var_name;    // Name of the variable
     Expression *initializer; // Initial value (nullptr if no initializer)
+    Symbol *inserted_symbol = nullptr; // Cached symbol from insert stage
 
     VariableDeclaration(Type *t, const std::string &name, Expression *init = nullptr);
     virtual ~VariableDeclaration();

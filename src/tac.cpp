@@ -1,4 +1,5 @@
 #include "tac.h"
+#include "symbol_table.h"
 #include <iostream>
 #include <sstream>
 
@@ -190,6 +191,18 @@ string TACInstruction::to_string() const
             ss << "return";
         break;
 
+    case TAC_PARAM:
+        ss << "param " << arg1.to_string();
+        break;
+
+    case TAC_CALL:
+        // result = call func, nArgs (arg1.name = func label/name, arg2.name = nArgs)
+        if (!result.is_empty())
+            ss << result.to_string() << " = ";
+        ss << "call " << arg1.to_string();
+        if (!arg2.is_empty()) ss << ", " << arg2.to_string();
+        break;
+
 
     }
 
@@ -226,7 +239,7 @@ int TACGenerator::emit(TACOp op, TACOperand result, TACOperand arg1, TACOperand 
     code.push_back(instr);
 
     // Print as we generate (for debugging)
-    cout << "[TAC] " << instr->line_number << ": " << instr->to_string() << endl;
+    if(debug) cout << "[TAC] " << instr->line_number << ": " << instr->to_string() << endl;
 
     return instr->line_number;
 }
@@ -246,7 +259,7 @@ void TACGenerator::print() const
 {
     if (code.empty())
     {
-        cout << "\n[No TAC generated]\n"
+        if(debug) cout << "\n[No TAC generated]\n"
              << endl;
         return;
     }

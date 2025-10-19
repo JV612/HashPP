@@ -69,32 +69,80 @@ private:
     // Hash table with list for handling scope/shadowing
     std::unordered_map<std::string, std::list<Symbol *>> table;
 
-    int currentScope; // Current active scope level for lookups
+public:
+
+    int Scopelevel; // scope level of SymbolTable
     int scopeCounter; // Monotonically increasing scope ID (never reused)
     int currentOffset;
+    std::string FunctionName;
 
-public:
+    SymbolTable *Parent; // Pointer to parent symbol table for nested scopes
+
     SymbolTable();
     ~SymbolTable();
 
     // Core operations
-    void insert(const std::string &name, Type type);
+    // Insert returns the created symbol for later use (e.g., TAC mangling)
+    Symbol *insert(const std::string &name, Type type);
+    // Lookup only within this table (no parent traversal)
     Symbol *lookup(const std::string &name);
-
-    // Scope management
-    void enterScope();
-    void exitScope();
-    void exitScopeKeepSymbols(); // Exit scope but keep symbols for TAC generation
 
     // Utilities
     void print() const;
-    int getCurrentScope() const { return currentScope; }
+    int getCurrentScope() const { return Scopelevel; }
 };
 
-// Global symbol table instance
-extern SymbolTable symbolTable;
+// Global stack of symbol tables for nested scopes
+extern std::vector<SymbolTable *> symbolTableStack;
+
+// Global unique scope id generator
+extern int next_scope_id;
+
+// Helper APIs for externalized scope management and lookups
+// - push a new scope whose parent is current top (if any); returns new current scope
+SymbolTable *push_scope(const std::string &functionName = "");
+// - pop current scope (does not delete it; symbols are kept for TAC/mangling)
+void pop_scope();
+// - get current scope (top of stack or nullptr)
+SymbolTable *current_scope();
+// - get global scope (bottom of stack or nullptr)
+SymbolTable *global_scope();
+// - recursive lookup starting from current scope up to parents
+Symbol *lookup_symbol(const std::string &name);
+
+// Utility: mangle an identifier for TAC using the symbol's scope (name_scope)
+std::string mangle_for_tac(const std::string &name, const Symbol *sym);
 
 // Global semantic error counter (increment on semantic errors like redeclaration)
 extern int semantic_error_count;
+
+// Track if current function has a return statement (for return checking)
+extern bool current_function_has_return;
+
+// Global debug flag for controlling debug output
+extern bool debug;
+
+// ===================== Function Registry =====================
+struct FunctionSignature {
+    std::string name;
+    std::vector<Type> params; // parameter types in order
+    Type returnType;          // function return type
+    int FunctionID;          // unique function ID for overloading
+};
+
+// magle functionID for TAC
+
+std::string mangle_function_for_tac(const std::string &name, const FunctionSignature &fs);
+
+// Global list of declared function signatures
+extern std::vector<FunctionSignature> function_signatures;
+
+// Register a function (name + params + return type)
+FunctionSignature *register_function(const std::string &name, const std::vector<Type> &params, const Type &retType);
+
+// Find function by name and arg type list; returns index or -1
+int find_function_match(const std::string &name, const std::vector<Type> &argTypes);
+
+void print_function_signatures();
 
 #endif // SYMBOL_TABLE_H
