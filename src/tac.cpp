@@ -16,6 +16,9 @@ string TACOperand::to_string() const
 {
     if (is_empty())
         return "";
+    // For string operands, include quotes in output
+    if (type == OPERAND_STRING)
+        return "\"" + name + "\"";
     return name;
 }
 
@@ -200,10 +203,9 @@ string TACInstruction::to_string() const
         if (!result.is_empty())
             ss << result.to_string() << " = ";
         ss << "call " << arg1.to_string();
-        if (!arg2.is_empty()) ss << ", " << arg2.to_string();
+        if (!arg2.is_empty())
+            ss << ", " << arg2.to_string();
         break;
-
-
     }
 
     return ss.str();
@@ -239,7 +241,8 @@ int TACGenerator::emit(TACOp op, TACOperand result, TACOperand arg1, TACOperand 
     code.push_back(instr);
 
     // Print as we generate (for debugging)
-    if(debug) cout << "[TAC] " << instr->line_number << ": " << instr->to_string() << endl;
+    if (debug)
+        cout << "[TAC] " << instr->line_number << ": " << instr->to_string() << endl;
 
     return instr->line_number;
 }
@@ -259,8 +262,9 @@ void TACGenerator::print() const
 {
     if (code.empty())
     {
-        if(debug) cout << "\n[No TAC generated]\n"
-             << endl;
+        if (debug)
+            cout << "\n[No TAC generated]\n"
+                 << endl;
         return;
     }
 

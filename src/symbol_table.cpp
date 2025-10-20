@@ -213,10 +213,9 @@ Type Type::promote_with(const Type &other) const
 // SymbolTable Implementation
 // ============================================================================
 
-SymbolTable::SymbolTable() : Scopelevel(0), scopeCounter(0), currentOffset(0), Parent(nullptr) 
+SymbolTable::SymbolTable() : Scopelevel(0), scopeCounter(0), currentOffset(0), Parent(nullptr)
 {
 }
-    
 
 SymbolTable::~SymbolTable()
 {
@@ -240,9 +239,9 @@ Symbol *SymbolTable::insert(const string &name, Type type)
         {
             if (sym->scope == Scopelevel)
             {
-             cerr << "[Semantic Error] Redeclaration of '" << name
-                 << "' in scope " << Scopelevel << "\n";
-             semantic_error_count++;
+                cerr << "[Semantic Error] Redeclaration of '" << name
+                     << "' in scope " << Scopelevel << "\n";
+                semantic_error_count++;
                 return nullptr;
             }
         }
@@ -255,7 +254,8 @@ Symbol *SymbolTable::insert(const string &name, Type type)
     // Update offset for next variable (use total size for arrays)
     currentOffset += type.get_total_size();
 
-    if(debug) {
+    if (debug)
+    {
         cout << "[Symbol Table] Inserted: " << name
              << " (type: " << type.to_string()
              << ", scope: " << Scopelevel
@@ -298,7 +298,8 @@ SymbolTable *push_scope(const std::string &functionName)
     child->Scopelevel = ++next_scope_id; // unique scope id
     child->FunctionName = functionName;
     symbolTableStack.push_back(child);
-    if(debug) {
+    if (debug)
+    {
         cout << "[Scope] Entered new scope " << child->Scopelevel
              << (parent ? string(" (parent ") + to_string(parent->Scopelevel) + ")" : " (global)")
              << endl;
@@ -311,7 +312,8 @@ void pop_scope()
     if (symbolTableStack.empty())
         return;
     SymbolTable *top = symbolTableStack.back();
-    if(debug) cout << "[Scope] Exiting scope " << top->Scopelevel << " (keeping symbols)" << endl;
+    if (debug)
+        cout << "[Scope] Exiting scope " << top->Scopelevel << " (keeping symbols)" << endl;
     // Print the symbol table for the scope being popped
     top->print();
     symbolTableStack.pop_back();
@@ -345,9 +347,10 @@ std::string mangle_for_tac(const std::string &name, const Symbol *sym)
 
 std::string mangle_function_for_tac(const std::string &name, const FunctionSignature &fs)
 {
-    if(&fs == nullptr)
+    if (&fs == nullptr)
         return name;
-    else return name + "_" + std::to_string(fs.FunctionID);
+    else
+        return name + "_" + std::to_string(fs.FunctionID);
 }
 
 // ===================== Function Registry =====================
@@ -358,7 +361,8 @@ FunctionSignature *register_function(const std::string &name, const std::vector<
 
     int index = find_function_match(name, params);
 
-    if(index != -1) {
+    if (index != -1)
+    {
         cerr << "[Semantic Error] Redeclaration of function '" << name << "' with same parameter types\n";
         semantic_error_count++;
         return nullptr;
@@ -382,15 +386,27 @@ FunctionSignature *register_function(const std::string &name, const std::vector<
 
 static bool type_compatible(const Type &expected, const Type &actual)
 {
-    if (expected.is_error() || actual.is_error()) return false;
+    if (expected.is_error() || actual.is_error())
+        return false;
+
+    // Handle array decay: array T[N] decays to pointer T*
+    if (expected.is_pointer() && actual.is_array)
+    {
+        // Array decays to pointer of same base type
+        // char[100] -> char*
+        return expected.base_type == actual.base_type && expected.pointer_level == 1;
+    }
+
     if (expected.is_pointer() || expected.is_array || actual.is_pointer() || actual.is_array)
     {
         // For now require exact pointer level and base type match
         return expected.pointer_level == actual.pointer_level && expected.base_type == actual.base_type && expected.is_array == actual.is_array && expected.array_dim == actual.array_dim;
     }
-    if (expected.base_type == actual.base_type) return true;
+    if (expected.base_type == actual.base_type)
+        return true;
     // Allow numeric promotions (char < int < float)
-    if (expected.is_numeric() && actual.is_numeric()) return true;
+    if (expected.is_numeric() && actual.is_numeric())
+        return true;
     return false;
 }
 
@@ -399,15 +415,22 @@ int find_function_match(const std::string &name, const std::vector<Type> &argTyp
     for (size_t i = 0; i < function_signatures.size(); ++i)
     {
         const auto &fs = function_signatures[i];
-        if (fs.name != name) continue;
-        
-        if (fs.params.size() != argTypes.size()) continue;
+        if (fs.name != name)
+            continue;
+
+        if (fs.params.size() != argTypes.size())
+            continue;
         bool ok = true;
         for (size_t j = 0; j < argTypes.size(); ++j)
         {
-            if (!type_compatible(fs.params[j], argTypes[j])) { ok = false; break; }
+            if (!type_compatible(fs.params[j], argTypes[j]))
+            {
+                ok = false;
+                break;
+            }
         }
-        if (ok) return (int)i;
+        if (ok)
+            return (int)i;
     }
 
     return -1;
@@ -417,8 +440,9 @@ void print_function_signatures()
 {
     if (function_signatures.empty())
     {
-        if(debug) cout << "\n[No Function Signatures Registered]\n"
-             << endl;
+        if (debug)
+            cout << "\n[No Function Signatures Registered]\n"
+                 << endl;
         return;
     }
 
@@ -455,8 +479,9 @@ void SymbolTable::print() const
 {
     if (table.empty())
     {
-        if(debug) cout << "\n[Symbol Table is empty]\n"
-             << endl;
+        if (debug)
+            cout << "\n[Symbol Table is empty]\n"
+                 << endl;
         return;
     }
 
@@ -480,4 +505,53 @@ void SymbolTable::print() const
 
     cout << "==================================\n"
          << endl;
+}
+
+// ============================================================================
+// Built-in I/O Functions Registration
+// ============================================================================
+
+void register_builtin_io_functions()
+{
+    // ========== PRINT FUNCTIONS ==========
+
+    // print_int(int)
+    vector<Type> print_int_params = {Type(TYPE_INT)};
+    register_function("print_int", print_int_params, Type(TYPE_VOID));
+
+    // print_double(double)
+    vector<Type> print_double_params = {Type(TYPE_FLOAT)};
+    register_function("print_double", print_double_params, Type(TYPE_VOID));
+
+    // print_char(char)
+    vector<Type> print_char_params = {Type(TYPE_CHAR)};
+    register_function("print_char", print_char_params, Type(TYPE_VOID));
+
+    // print_string(char*)
+    vector<Type> print_string_params = {Type(TYPE_CHAR, 1)}; // char* (pointer_level=1)
+    register_function("print_string", print_string_params, Type(TYPE_VOID));
+
+    // print_newline()
+    vector<Type> print_newline_params = {}; // No parameters
+    register_function("print_newline", print_newline_params, Type(TYPE_VOID));
+
+    // ========== SCAN FUNCTIONS ==========
+
+    // scan_int() -> int
+    vector<Type> scan_int_params = {};
+    register_function("scan_int", scan_int_params, Type(TYPE_INT));
+
+    // scan_double() -> double
+    vector<Type> scan_double_params = {};
+    register_function("scan_double", scan_double_params, Type(TYPE_FLOAT));
+
+    // scan_char() -> char
+    vector<Type> scan_char_params = {};
+    register_function("scan_char", scan_char_params, Type(TYPE_CHAR));
+
+    // scan_string(char*)
+    vector<Type> scan_string_params = {Type(TYPE_CHAR, 1)}; // char* parameter
+    register_function("scan_string", scan_string_params, Type(TYPE_VOID));
+
+    cout << "[COMPILER] Registered 9 built-in I/O functions" << endl;
 }

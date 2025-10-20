@@ -16,6 +16,7 @@ public:
         OPERAND_IDENTIFIER, // Named variable (x, y, etc.)
         OPERAND_CONSTANT,   // Literal value (5, 3.14, etc.)
         OPERAND_LABEL,      // Label (L1, L2, etc.)
+        OPERAND_STRING,     // String literal ("hello", etc.)
         OPERAND_EMPTY       // Empty operand (for unary ops)
     };
 
@@ -80,10 +81,10 @@ enum TACOp
     TAC_IF_GOTO,       // if x goto L1
     TAC_IF_FALSE_GOTO, // ifFalse x goto L1
 
-    // Function calls and return 
-    TAC_RETURN,        // return
-    TAC_PARAM,         // param x
-    TAC_CALL,          // r = call f, nArgs
+    // Function calls and return
+    TAC_RETURN, // return
+    TAC_PARAM,  // param x
+    TAC_CALL,   // r = call f, nArgs
 };
 
 // TAC Instruction - one line of TAC

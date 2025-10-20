@@ -182,7 +182,8 @@ void IfStatement::generate_tac()
         continuelist = then_stmt->continuelist;
     }
 
-    if(debug) printf("[AST] IfStatement: Generated TAC with backpatching\n");
+    if (debug)
+        printf("[AST] IfStatement: Generated TAC with backpatching\n");
 }
 
 // ============================================================================
@@ -266,7 +267,8 @@ void WhileStatement::generate_tac()
     // S.nextlist = B.falselist (exit loop when condition is false)
     nextlist = condition->falselist;
 
-    if(debug) printf("[AST] WhileStatement: Generated TAC with backpatching\n");
+    if (debug)
+        printf("[AST] WhileStatement: Generated TAC with backpatching\n");
 }
 
 // ============================================================================
@@ -346,7 +348,8 @@ void DoWhileStatement::generate_tac()
     // S.nextlist = B.falselist (exit when condition is false)
     nextlist = condition->falselist;
 
-    if(debug) printf("[AST] DoWhileStatement: Generated TAC with backpatching\n");
+    if (debug)
+        printf("[AST] DoWhileStatement: Generated TAC with backpatching\n");
 }
 
 // ============================================================================
@@ -432,7 +435,8 @@ void UntilStatement::generate_tac()
     // S.nextlist = B.truelist (exit loop when condition is TRUE)
     nextlist = condition->truelist;
 
-    if(debug) printf("[AST] UntilStatement: Generated TAC with backpatching\n");
+    if (debug)
+        printf("[AST] UntilStatement: Generated TAC with backpatching\n");
 }
 
 // ============================================================================
@@ -561,7 +565,8 @@ void ForStatement::generate_tac()
     // S.nextlist = exit_list
     nextlist = exit_list;
 
-    if(debug) printf("[AST] ForStatement: Generated TAC with backpatching\n");
+    if (debug)
+        printf("[AST] ForStatement: Generated TAC with backpatching\n");
 }
 
 // ============================================================================
@@ -596,7 +601,8 @@ void BreakStatement::generate_tac()
     // Add to breaklist (will be backpatched by enclosing loop to exit)
     breaklist = makelist(goto_instr);
 
-    if(debug) printf("[AST] BreakStatement: Generated goto for break\n");
+    if (debug)
+        printf("[AST] BreakStatement: Generated goto for break\n");
 }
 
 // ============================================================================
@@ -631,7 +637,8 @@ void ContinueStatement::generate_tac()
     // Add to continuelist (will be backpatched by enclosing loop to beginning/post)
     continuelist = makelist(goto_instr);
 
-    if(debug) printf("[AST] ContinueStatement: Generated goto for continue\n");
+    if (debug)
+        printf("[AST] ContinueStatement: Generated goto for continue\n");
 }
 
 // ============================================================================
@@ -658,13 +665,29 @@ string DeclarationStatement::to_string() const
 
 void DeclarationStatement::generate_tac()
 {
+    // First, generate TAC for any pending declarators from comma-separated lists
+    // (these were deferred during parsing)
+    extern std::vector<Declaration *> pending_declarator_tac;
+    for (Declaration *decl : pending_declarator_tac)
+    {
+        if (decl)
+        {
+            decl->generate_tac();
+            // Append code from pending declarator
+            code.insert(code.end(), decl->code.begin(), decl->code.end());
+        }
+    }
+    pending_declarator_tac.clear(); // Clear the pending list
+
+    // Now generate TAC for the main declaration (the last one in the list)
     if (declaration)
     {
         declaration->generate_tac();
-        code = declaration->code;
+        code.insert(code.end(), declaration->code.begin(), declaration->code.end());
     }
     // No control flow, so nextlist stays empty
-    if(debug) printf("[AST] DeclarationStatement: Generated TAC for wrapped declaration\n");
+    if (debug)
+        printf("[AST] DeclarationStatement: Generated TAC for wrapped declaration\n");
 }
 
 // ============================================================================
@@ -691,15 +714,32 @@ string ExpressionStatement::to_string() const
 
 void ExpressionStatement::generate_tac()
 {
+    // First, generate TAC for any pending comma expressions
+    // (left-hand sides of comma operators that were deferred during parsing)
+    extern std::vector<Expression *> pending_comma_expr_tac;
+    for (Expression *e : pending_comma_expr_tac)
+    {
+        if (e)
+        {
+            e->generate_tac();
+            // Append code from pending expression
+            code.insert(code.end(), e->code.begin(), e->code.end());
+        }
+    }
+    pending_comma_expr_tac.clear(); // Clear the pending list
+
+    // Now generate TAC for the main expression (the rightmost in comma chain)
     if (expr)
     {
-        if(debug) printf("[ExpressionStatement] Generating TAC for expression\n");
+        if (debug)
+            printf("[ExpressionStatement] Generating TAC for expression\n");
         expr->generate_tac();
-        code = expr->code;
+        code.insert(code.end(), expr->code.begin(), expr->code.end());
     }
     else
     {
-        if(debug) printf("[ExpressionStatement] Empty statement (just semicolon)\n");
+        if (debug)
+            printf("[ExpressionStatement] Empty statement (just semicolon)\n");
     }
 }
 
@@ -738,7 +778,8 @@ string CompoundStatement::to_string() const
 
 void CompoundStatement::generate_tac()
 {
-    if(debug) printf("[CompoundStatement] Generating TAC for %zu statements\n", statements.size());
+    if (debug)
+        printf("[CompoundStatement] Generating TAC for %zu statements\n", statements.size());
 
     InstructionList current_nextlist;
 
@@ -807,7 +848,8 @@ void CaseLabel::generate_tac()
     breaklist = statement->breaklist;
     continuelist = statement->continuelist;
 
-    if(debug) printf("[AST] CaseLabel: Generated TAC for case label\n");
+    if (debug)
+        printf("[AST] CaseLabel: Generated TAC for case label\n");
 }
 
 // ============================================================================
@@ -840,7 +882,8 @@ void DefaultLabel::generate_tac()
     breaklist = statement->breaklist;
     continuelist = statement->continuelist;
 
-    if(debug) printf("[AST] DefaultLabel: Generated TAC for default label\n");
+    if (debug)
+        printf("[AST] DefaultLabel: Generated TAC for default label\n");
 }
 
 // ============================================================================
@@ -911,7 +954,8 @@ void SwitchStatement::generate_tac()
     //   EXIT:
     // ========================================================================
 
-    if(debug) printf("[AST] SwitchStatement: Generating TAC\n");
+    if (debug)
+        printf("[AST] SwitchStatement: Generating TAC\n");
 
     // STEP 1: Type check - switch expression must be integer type
     switch_expr->generate_tac();
@@ -928,7 +972,8 @@ void SwitchStatement::generate_tac()
     default_label = -1;
     collect_labels(body);
 
-    if(debug) printf("[AST] SwitchStatement: Found %zu case labels\n", case_labels.size());
+    if (debug)
+        printf("[AST] SwitchStatement: Found %zu case labels\n", case_labels.size());
 
     // STEP 3: Start building our code - add switch expression evaluation
     code.insert(code.end(), switch_expr->code.begin(), switch_expr->code.end());
@@ -1046,8 +1091,9 @@ void SwitchStatement::generate_tac()
     // Switch statement's nextlist is empty
     nextlist.clear();
 
-    if(debug) printf("[AST] SwitchStatement: Generated TAC with %zu cases, EXIT at line %d\n",
-           case_labels.size(), exit_label);
+    if (debug)
+        printf("[AST] SwitchStatement: Generated TAC with %zu cases, EXIT at line %d\n",
+               case_labels.size(), exit_label);
 }
 
 // ============================================================================
@@ -1145,7 +1191,7 @@ void ReturnStatement::generate_tac()
 {
     // Mark that current function has a return statement
     current_function_has_return = true;
-    
+
     // Check if we're inside a function (current_function_return_type should be set)
     if (current_function_return_type.base_type == TYPE_ERROR)
     {
@@ -1176,8 +1222,8 @@ void ReturnStatement::generate_tac()
         expr->generate_tac();
         code = expr->code;
 
-    // Type check: compare expr->type against current_function_return_type (value)
-    if (expr->type)
+        // Type check: compare expr->type against current_function_return_type (value)
+        if (expr->type)
         {
             // Check for allowed promotions manually (Phase 1 rules)
             bool compatible = false;
@@ -1258,7 +1304,8 @@ void ReturnStatement::generate_tac()
         code.push_back(tacGen.getCode().back());
     }
 
-    if(debug) printf("[AST] ReturnStatement: Generated TAC for return statement\n");
+    if (debug)
+        printf("[AST] ReturnStatement: Generated TAC for return statement\n");
 }
 
 ReturnStatement *create_return_statement(Expression *expr)

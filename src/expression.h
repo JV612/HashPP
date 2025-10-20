@@ -69,23 +69,26 @@ public:
         PRIM_INT_CONSTANT,   // Integer literal (e.g., 42)
         PRIM_CHAR_CONSTANT,  // Character literal (e.g., 'a', '\n')
         PRIM_FLOAT_CONSTANT, // Float/double literal (e.g., 3.14)
+        PRIM_STRING_LITERAL, // String literal (e.g., "hello")
         PRIM_PAREN_EXPR      // Parenthesized expression (e.g., (x + 1))
     };
 
-    PrimaryType prim_type; // Which kind of primary expression
-    std::string name;      // For PRIM_IDENTIFIER
-    int int_value;         // For PRIM_INT_CONSTANT
-    char char_value;       // For PRIM_CHAR_CONSTANT
-    double float_value;    // For PRIM_FLOAT_CONSTANT (stores both float and double)
-    Expression *expr;      // For PRIM_PAREN_EXPR
-    Symbol *symbol_ref;    // For PRIM_IDENTIFIER - cached symbol lookup result
+    PrimaryType prim_type;    // Which kind of primary expression
+    std::string name;         // For PRIM_IDENTIFIER
+    int int_value;            // For PRIM_INT_CONSTANT
+    char char_value;          // For PRIM_CHAR_CONSTANT
+    double float_value;       // For PRIM_FLOAT_CONSTANT (stores both float and double)
+    std::string string_value; // For PRIM_STRING_LITERAL
+    Expression *expr;         // For PRIM_PAREN_EXPR
+    Symbol *symbol_ref;       // For PRIM_IDENTIFIER - cached symbol lookup result
 
     // Constructors for each type
-    PrimaryExpression(const std::string &id_name); // Identifier
-    PrimaryExpression(int value);                  // Int constant
-    PrimaryExpression(char value);                 // Char constant
-    PrimaryExpression(double value);               // Float/double constant
-    PrimaryExpression(Expression *e);              // Parenthesized
+    PrimaryExpression(const std::string &id_name);                     // Identifier
+    PrimaryExpression(int value);                                      // Int constant
+    PrimaryExpression(char value);                                     // Char constant
+    PrimaryExpression(double value);                                   // Float/double constant
+    PrimaryExpression(const std::string &str, bool is_string_literal); // String literal
+    PrimaryExpression(Expression *e);                                  // Parenthesized
     virtual ~PrimaryExpression();
 
     std::string to_string() const override;
@@ -222,22 +225,24 @@ class CallExpression : public Expression
 {
 public:
     std::string func_name;
-    std::vector<Expression*> args;
+    std::vector<Expression *> args;
 
-    CallExpression(const std::string &name, const std::vector<Expression*> &a)
+    CallExpression(const std::string &name, const std::vector<Expression *> &a)
         : func_name(name), args(a) {}
     virtual ~CallExpression()
     {
-        for (auto *e : args) delete e;
+        for (auto *e : args)
+            delete e;
     }
 
-    std::string to_string() const override {
+    std::string to_string() const override
+    {
         return func_name + "(...)"; // simplified
     }
     void generate_tac() override;
 };
 
-CallExpression *create_call_expression(const std::string &name, const std::vector<Expression*> &args);
+CallExpression *create_call_expression(const std::string &name, const std::vector<Expression *> &args);
 
 // ============================================================================
 // Helper Functions - Expression Node Creation
@@ -248,6 +253,7 @@ PrimaryExpression *create_primary_expression(const std::string &name);
 PrimaryExpression *create_primary_expression(int value);
 PrimaryExpression *create_primary_expression(char value);
 PrimaryExpression *create_primary_expression(double value);
+PrimaryExpression *create_string_literal_expression(const std::string &str);
 
 // Overloaded versions with location info
 PrimaryExpression *create_primary_expression(const std::string &name, int line, int col);

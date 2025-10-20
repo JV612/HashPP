@@ -24,6 +24,12 @@ int current_pointer_level = 0;
 bool current_is_array = false;
 std::vector<int> current_array_sizes;
 
+// List to hold declarators from comma-separated lists that need deferred TAC generation
+std::vector<Declaration*> pending_declarator_tac;
+
+// List to hold left-hand expressions from comma operator that need TAC generation
+std::vector<Expression*> pending_comma_expr_tac;
+
 // Snapshot of function header info captured when parsing a function declarator
 std::string pending_function_name;
 Type pending_function_return_type;
@@ -150,6 +156,10 @@ primary_expression
             $$ = $1;
         }
 	| STRING_LITERAL
+        {
+            $$ = create_string_literal_expression($1);
+            free($1);
+        }
 	| '(' expression ')'
         { 
             $$ = create_paren_expression($2);
@@ -381,6 +391,14 @@ expression
 	: assignment_expression
         { $$ = $1; }
 	| expression ',' assignment_expression
+        {
+            // Comma operator: evaluate left side for side effects, return right side
+            // Defer TAC generation for left expression until the whole expression is used
+            if ($1) {
+                pending_comma_expr_tac.push_back($1);
+            }
+            $$ = $3;  // Return the right side
+        }
 	;
 
 constant_expression
@@ -418,11 +436,11 @@ init_declarator_list
         { $$ = $1; }  /* Return the first (and possibly only) declarator */
 	| init_declarator_list ',' init_declarator
         { 
-            /* For multiple declarators, process previous ones completely */
-            /* They won't be wrapped in DeclarationStatement, so insert + generate now */
+            /* For multiple declarators, insert previous one into symbol table */
+            /* and save it for deferred TAC generation */
             if ($1) {
                 $1->insert_symbol();
-                $1->generate_tac();
+                pending_declarator_tac.push_back($1);  // Defer TAC generation
             }
             $$ = $3;  /* Return the latest declarator */
         }
@@ -1178,6 +1196,9 @@ int main(int argc, char *argv[]) {
 
     // Create Symbol table for Global scope on the stack and push as current scope
     push_scope("Global");
+
+    // Register built-in I/O functions in global scope
+    register_builtin_io_functions();
 
     if(debug) {
         printf("\n========================================\n");

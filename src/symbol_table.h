@@ -70,8 +70,7 @@ private:
     std::unordered_map<std::string, std::list<Symbol *>> table;
 
 public:
-
-    int Scopelevel; // scope level of SymbolTable
+    int Scopelevel;   // scope level of SymbolTable
     int scopeCounter; // Monotonically increasing scope ID (never reused)
     int currentOffset;
     std::string FunctionName;
@@ -123,11 +122,12 @@ extern bool current_function_has_return;
 extern bool debug;
 
 // ===================== Function Registry =====================
-struct FunctionSignature {
+struct FunctionSignature
+{
     std::string name;
     std::vector<Type> params; // parameter types in order
     Type returnType;          // function return type
-    int FunctionID;          // unique function ID for overloading
+    int FunctionID;           // unique function ID for overloading
 };
 
 // magle functionID for TAC
@@ -144,5 +144,8 @@ FunctionSignature *register_function(const std::string &name, const std::vector<
 int find_function_match(const std::string &name, const std::vector<Type> &argTypes);
 
 void print_function_signatures();
+
+// Register built-in I/O functions
+void register_builtin_io_functions();
 
 #endif // SYMBOL_TABLE_H

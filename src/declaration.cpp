@@ -53,7 +53,8 @@ string VariableDeclaration::to_string() const
 
 void VariableDeclaration::insert_symbol()
 {
-    if(debug) {
+    if (debug)
+    {
         cout << "[AST] Variable declaration: " << var_name
              << " (type: " << decl_type->to_string() << ")" << endl;
     }
@@ -99,12 +100,20 @@ void VariableDeclaration::generate_tac()
 
         // Check type compatibility with full pointer/array checking
         bool compatible = false;
-        
+
         // First check: exact type match (including pointer levels and array status)
-        if (decl_type->base_type == initializer->type->base_type && 
+        if (decl_type->base_type == initializer->type->base_type &&
             decl_type->pointer_level == initializer->type->pointer_level &&
             decl_type->is_array == initializer->type->is_array)
         {
+            compatible = true;
+        }
+        // Array decay check: array T[N] can initialize pointer T*
+        else if (decl_type->pointer_level == 1 && !decl_type->is_array &&
+                 initializer->type->is_array &&
+                 decl_type->base_type == initializer->type->base_type)
+        {
+            // Array decays to pointer in initialization: char[N] -> char*
             compatible = true;
         }
         // Second check: numeric type conversions (only for non-pointer types)
@@ -117,7 +126,7 @@ void VariableDeclaration::generate_tac()
             fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in initialization of '%s' from %s to %s\n",
                     line_no, var_name.c_str(), initializer->type->to_string().c_str(), decl_type->to_string().c_str());
         }
-        
+
         // If not compatible, it's an error
         if (!compatible)
         {
@@ -134,9 +143,9 @@ void VariableDeclaration::generate_tac()
         code = initializer->code;
 
         // Look up the symbol to get its scope for mangling
-    // Prefer the symbol captured at insert time to ensure correct scope id
-    Symbol *sym = inserted_symbol ? inserted_symbol : lookup_symbol(var_name);
-    string mangled_name = sym ? mangle_for_tac(var_name, sym) : var_name;
+        // Prefer the symbol captured at insert time to ensure correct scope id
+        Symbol *sym = inserted_symbol ? inserted_symbol : lookup_symbol(var_name);
+        string mangled_name = sym ? mangle_for_tac(var_name, sym) : var_name;
 
         // Generate assignment with mangled name: varname_scope
         TACOperand lhs(TACOperand::OPERAND_IDENTIFIER, mangled_name);

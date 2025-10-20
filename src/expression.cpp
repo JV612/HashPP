@@ -60,6 +60,11 @@ PrimaryExpression::PrimaryExpression(double value)
 {
 }
 
+PrimaryExpression::PrimaryExpression(const string &str, bool is_string_literal)
+    : prim_type(PRIM_STRING_LITERAL), int_value(0), char_value('\0'), float_value(0.0), string_value(str), expr(nullptr), symbol_ref(nullptr)
+{
+}
+
 PrimaryExpression::PrimaryExpression(Expression *e)
     : prim_type(PRIM_PAREN_EXPR), int_value(0), char_value('\0'), float_value(0.0), expr(e), symbol_ref(nullptr)
 {
@@ -96,6 +101,8 @@ string PrimaryExpression::to_string() const
         return "'" + std::string(1, char_value) + "'";
     case PRIM_FLOAT_CONSTANT:
         return std::to_string(float_value);
+    case PRIM_STRING_LITERAL:
+        return "\"" + string_value + "\"";
     case PRIM_PAREN_EXPR:
         return "(" + expr->to_string() + ")";
     }
@@ -168,6 +175,16 @@ void PrimaryExpression::generate_tac()
         result = new TACOperand(TACOperand::OPERAND_CONSTANT, std::to_string(float_value));
         type = new Type(TYPE_FLOAT);
         cout << "[AST] Float constant: " << float_value << endl;
+        break;
+    }
+
+    case PRIM_STRING_LITERAL:
+    {
+        // String literals create a string operand
+        result = new TACOperand(TACOperand::OPERAND_STRING, string_value);
+        // String literals have type "pointer to char" (char*)
+        type = new Type(TYPE_CHAR, 1); // base_type = char, pointer_level = 1
+        cout << "[AST] String literal: \"" << string_value << "\"" << endl;
         break;
     }
 
@@ -854,9 +871,9 @@ void AssignmentExpression::generate_tac()
 
     // Check type compatibility with full pointer/array checking
     bool compatible = false;
-    
+
     // First check: exact type match (including pointer levels and array status)
-    if (sym->type.base_type == rhs->type->base_type && 
+    if (sym->type.base_type == rhs->type->base_type &&
         sym->type.pointer_level == rhs->type->pointer_level &&
         sym->type.is_array == rhs->type->is_array)
     {
@@ -872,7 +889,7 @@ void AssignmentExpression::generate_tac()
         fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in assignment from %s to %s\n",
                 line_no, rhs->type->to_string().c_str(), sym->type.to_string().c_str());
     }
-    
+
     // If not compatible, it's an error
     if (!compatible)
     {
@@ -925,6 +942,11 @@ PrimaryExpression *create_primary_expression(int value)
 PrimaryExpression *create_primary_expression(char value)
 {
     return new PrimaryExpression(value);
+}
+
+PrimaryExpression *create_string_literal_expression(const string &str)
+{
+    return new PrimaryExpression(str, true);
 }
 
 PrimaryExpression *create_primary_expression(double value)
@@ -1264,8 +1286,9 @@ void CallExpression::generate_tac()
     }
 
     // Emit call - use mangled function name if we found a match
-    std::string call_name = func_name;  // default to original name
-    if (match >= 0) {
+    std::string call_name = func_name; // default to original name
+    if (match >= 0)
+    {
         call_name = mangle_function_for_tac(func_name, function_signatures[match]);
     }
     TACOperand funcOp(TACOperand::OPERAND_LABEL, call_name);
@@ -1290,7 +1313,7 @@ void CallExpression::generate_tac()
     }
 }
 
-CallExpression *create_call_expression(const std::string &name, const std::vector<Expression*> &args)
+CallExpression *create_call_expression(const std::string &name, const std::vector<Expression *> &args)
 {
     return new CallExpression(name, args);
 }
