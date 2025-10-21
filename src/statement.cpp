@@ -1018,6 +1018,9 @@ void SwitchStatement::generate_tac()
     // Accumulate all break statements from the body
     std::vector<int> accumulated_breaklist;
 
+    // Increment loop_depth so break statements know they're in a switch
+    loop_depth++;
+
     if (CompoundStatement *compound = dynamic_cast<CompoundStatement *>(body))
     {
         for (Statement *stmt : compound->statements)
@@ -1065,6 +1068,9 @@ void SwitchStatement::generate_tac()
         // Accumulate break statements from the body
         accumulated_breaklist = body->breaklist;
     }
+
+    // Decrement loop_depth now that we're done with the switch body
+    loop_depth--;
 
     // STEP 6: Backpatch case jumps to their actual positions
     for (size_t i = 0; i < case_jump_instructions.size() && i < case_positions.size(); i++)

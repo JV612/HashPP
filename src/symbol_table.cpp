@@ -15,6 +15,74 @@ bool debug = false;
 std::vector<FunctionSignature> function_signatures;
 
 // ============================================================================
+// Enum Type Implementation
+// ============================================================================
+
+std::unordered_map<std::string, EnumType *> enum_registry;
+
+void EnumType::add_member(const std::string &member_name, int value)
+{
+    members[member_name] = value;
+    next_value = value + 1;
+}
+
+int EnumType::get_member_value(const std::string &member_name) const
+{
+    auto it = members.find(member_name);
+    if (it != members.end())
+    {
+        return it->second;
+    }
+    return 0; // Should not happen if used correctly
+}
+
+bool EnumType::has_member(const std::string &member_name) const
+{
+    return members.find(member_name) != members.end();
+}
+
+void register_enum(const std::string &enum_name, EnumType *enum_type)
+{
+    enum_registry[enum_name] = enum_type;
+}
+
+EnumType *lookup_enum(const std::string &enum_name)
+{
+    auto it = enum_registry.find(enum_name);
+    if (it != enum_registry.end())
+    {
+        return it->second;
+    }
+    return nullptr;
+}
+
+bool is_enum_member(const std::string &identifier)
+{
+    // Check all registered enums for this member
+    for (const auto &pair : enum_registry)
+    {
+        if (pair.second->has_member(identifier))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+int get_enum_member_value(const std::string &identifier)
+{
+    // Search all registered enums for this member
+    for (const auto &pair : enum_registry)
+    {
+        if (pair.second->has_member(identifier))
+        {
+            return pair.second->get_member_value(identifier);
+        }
+    }
+    return 0; // Should not happen if is_enum_member was checked first
+}
+
+// ============================================================================
 // Type Implementation
 // ============================================================================
 
@@ -38,6 +106,9 @@ string Type::to_string() const
         break;
     case TYPE_VOID:
         result += "void";
+        break;
+    case TYPE_ENUM:
+        result += "enum";
         break;
     case TYPE_ERROR:
         result += "error";
@@ -78,6 +149,8 @@ int Type::get_size() const
         return 4;
     case TYPE_CHAR:
         return 1;
+    case TYPE_ENUM:
+        return 4; // Enums are stored as integers
     case TYPE_VOID:
         return 0;
     case TYPE_ERROR:
@@ -153,23 +226,33 @@ bool Type::is_pointer() const
 
 /**
  * Check if this type can be used in arithmetic operations
- * Returns true for int, float, and char (char promotes to int)
+ * Returns true for int, float, char, and enum (enums are treated as ints)
  */
 bool Type::is_numeric() const
 {
+    // Pointers are not numeric
+    if (pointer_level > 0)
+        return false;
+
     return base_type == TYPE_INT ||
            base_type == TYPE_FLOAT ||
-           base_type == TYPE_CHAR;
+           base_type == TYPE_CHAR ||
+           base_type == TYPE_ENUM;
 }
 
 /**
  * Check if this type is an integer type (for modulo, bitwise ops)
- * Returns true for int and char only (no floating point)
+ * Returns true for int, char, and enum (no floating point)
  */
 bool Type::is_integer() const
 {
+    // Pointers are not integers
+    if (pointer_level > 0)
+        return false;
+
     return base_type == TYPE_INT ||
-           base_type == TYPE_CHAR;
+           base_type == TYPE_CHAR ||
+           base_type == TYPE_ENUM;
 }
 
 /**

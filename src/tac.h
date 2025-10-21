@@ -44,10 +44,12 @@ enum TACOp
     TAC_MOD, // x = y % z
 
     // Unary
-    TAC_UMINUS,  // x = -y
-    TAC_UPLUS,   // x = +y
-    TAC_PRE_INC, // ++x (x = x + 1)
-    TAC_PRE_DEC, // --x (x = x - 1)
+    TAC_UMINUS,   // x = -y
+    TAC_UPLUS,    // x = +y
+    TAC_PRE_INC,  // ++x (x = x + 1)
+    TAC_PRE_DEC,  // --x (x = x - 1)
+    TAC_POST_INC, // x++ (result = x, then x = x + 1)
+    TAC_POST_DEC, // x-- (result = x, then x = x - 1)
 
     // Pointer/Array Operations
     TAC_ADDR_OF,     // x = &y (address-of)

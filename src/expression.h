@@ -125,6 +125,12 @@ public:
 
     std::string to_string() const override;
     void generate_tac() override;
+
+private:
+    // Helper methods for pointer arithmetic
+    void handle_pointer_plus_integer(Expression *ptr_expr, Expression *int_expr);
+    void handle_pointer_minus_integer(Expression *ptr_expr, Expression *int_expr);
+    void handle_pointer_minus_pointer(Expression *left_ptr, Expression *right_ptr);
 };
 
 /**
@@ -152,6 +158,35 @@ public:
 
     UnaryExpression(TACOp operation, Expression *e);
     virtual ~UnaryExpression();
+
+    std::string to_string() const override;
+    void generate_tac() override;
+};
+
+/**
+ * Postfix Expression - Postfix increment/decrement
+ *
+ * Represents: expr++ or expr--
+ * Examples: x++, arr[i]++, (*p)++
+ *
+ * Key difference from prefix:
+ * - Returns the OLD value before increment/decrement
+ * - Increments/decrements the variable afterward
+ *
+ * generate_tac():
+ * 1. Evaluate the operand expression
+ * 2. Save current value to temporary
+ * 3. Emit increment/decrement on the variable
+ * 4. Result is the saved temporary (old value)
+ */
+class PostfixExpression : public Expression
+{
+public:
+    TACOp op;         // TAC_POST_INC or TAC_POST_DEC
+    Expression *expr; // The operand being modified
+
+    PostfixExpression(TACOp operation, Expression *e);
+    virtual ~PostfixExpression();
 
     std::string to_string() const override;
     void generate_tac() override;
@@ -267,6 +302,7 @@ PrimaryExpression *create_paren_expression(Expression *expr);
 // Create other expressions
 BinaryExpression *create_binary_expression(Expression *left, TACOp op, Expression *right);
 UnaryExpression *create_unary_expression(TACOp op, Expression *expr);
+PostfixExpression *create_postfix_expression(TACOp op, Expression *expr);
 AssignmentExpression *create_assignment_expression(const std::string &var, Expression *rhs);
 GeneralAssignmentExpression *create_general_assignment_expression(Expression *lhs, Expression *rhs);
 ArrayAccessExpression *create_array_access_expression(Expression *array, Expression *index);

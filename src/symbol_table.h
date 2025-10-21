@@ -14,8 +14,40 @@ enum PrimitiveType
     TYPE_FLOAT,
     TYPE_CHAR,
     TYPE_VOID,
+    TYPE_ENUM,
     TYPE_ERROR
 };
+
+// ============================================================================
+// Enum Type Support
+// ============================================================================
+
+class EnumType
+{
+public:
+    std::string name;                             // Name of the enum (e.g., "Color")
+    std::unordered_map<std::string, int> members; // member_name -> value
+    int next_value;                               // For auto-incrementing values
+
+    EnumType(const std::string &n) : name(n), next_value(0) {}
+
+    void add_member(const std::string &member_name, int value);
+    int get_member_value(const std::string &member_name) const;
+    bool has_member(const std::string &member_name) const;
+};
+
+// Global registry of enum types
+extern std::unordered_map<std::string, EnumType *> enum_registry;
+
+// Helper functions for enum management
+void register_enum(const std::string &enum_name, EnumType *enum_type);
+EnumType *lookup_enum(const std::string &enum_name);
+bool is_enum_member(const std::string &identifier);
+int get_enum_member_value(const std::string &identifier);
+
+// ============================================================================
+// Type System
+// ============================================================================
 
 class Type
 {
@@ -58,8 +90,12 @@ public:
     int scope;
     int offset; // Memory offset
 
+    // For enum constants
+    bool is_enum_constant;
+    int enum_value;
+
     Symbol(std::string n, Type t, int s, int off)
-        : name(n), type(t), scope(s), offset(off) {}
+        : name(n), type(t), scope(s), offset(off), is_enum_constant(false), enum_value(0) {}
 };
 
 // Minimal Symbol Table for Phase 1

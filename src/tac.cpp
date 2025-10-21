@@ -77,6 +77,14 @@ string TACInstruction::to_string() const
         ss << result.to_string() << " = " << result.to_string() << " - 1";
         break;
 
+    case TAC_POST_INC:
+        ss << result.to_string() << " = " << result.to_string() << " + 1";
+        break;
+
+    case TAC_POST_DEC:
+        ss << result.to_string() << " = " << result.to_string() << " - 1";
+        break;
+
     case TAC_ADDR_OF:
         ss << result.to_string() << " = &" << arg1.to_string();
         break;

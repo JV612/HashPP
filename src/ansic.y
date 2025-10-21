@@ -24,6 +24,9 @@ int current_pointer_level = 0;
 bool current_is_array = false;
 std::vector<int> current_array_sizes;
 
+// Track current enum being parsed
+EnumType* current_enum = nullptr;
+
 // List to hold declarators from comma-separated lists that need deferred TAC generation
 std::vector<Declaration*> pending_declarator_tac;
 
@@ -218,7 +221,13 @@ postfix_expression
 	| postfix_expression '.' IDENTIFIER
 	| postfix_expression PTR_OP IDENTIFIER
 	| postfix_expression INC_OP
+        {
+            $$ = create_postfix_expression(TAC_POST_INC, $1);
+        }
 	| postfix_expression DEC_OP
+        {
+            $$ = create_postfix_expression(TAC_POST_DEC, $1);
+        }
 	;
 
 argument_expression_list
@@ -533,7 +542,11 @@ type_specifier
     | SIGNED
     | UNSIGNED
     | struct_or_union_specifier
-    | enum_specifier
+    | enum_specifier {
+          // After parsing enum, set current_type to enum type
+          current_type = Type(TYPE_ENUM);
+          $$ = new Type(TYPE_ENUM);
+      }
     | TYPE_NAME
     | class_specifier
     ;
@@ -609,9 +622,36 @@ struct_or_union
     ;
 
 enum_specifier
-	: ENUM '{' enumerator_list '}'
-	| ENUM IDENTIFIER '{' enumerator_list '}'
-	| ENUM IDENTIFIER
+	: ENUM '{' {
+          // Anonymous enum - create temporary name
+          std::string temp_name = "__anon_enum_" + std::to_string(next_scope_id);
+          EnumType* et = new EnumType(temp_name);
+          register_enum(temp_name, et);
+          current_enum = et;
+      } enumerator_list '}' {
+          current_enum = nullptr;
+          if (debug) printf("[ENUM] Created anonymous enum\n");
+      }
+	| ENUM IDENTIFIER '{' {
+          // Named enum - create with identifier name
+          EnumType* et = new EnumType($2);
+          register_enum($2, et);
+          current_enum = et;
+          if (debug) printf("[ENUM] Created enum '%s'\n", $2);
+      } enumerator_list '}' {
+          current_enum = nullptr;
+          free($2);
+      }
+	| ENUM IDENTIFIER {
+          // Enum usage (not definition) - just reference existing enum
+          if (lookup_enum($2)) {
+              if (debug) printf("[ENUM] Using enum '%s'\n", $2);
+          } else {
+              fprintf(stderr, "[Error] Line %d: enum '%s' not defined\n", yylineno, $2);
+              semantic_error_count++;
+          }
+          free($2);
+      }
 	;
 
 enumerator_list
@@ -620,8 +660,61 @@ enumerator_list
 	;
 
 enumerator
-	: IDENTIFIER
-	| IDENTIFIER '=' constant_expression
+	: IDENTIFIER {
+          if (current_enum) {
+              // Auto-increment value
+              int value = current_enum->next_value;
+              current_enum->add_member($1, value);
+              
+              if (debug) printf("[ENUM] Member '%s' = %d\n", $1, value);
+              
+              // Insert enum member as integer constant in symbol table
+              SymbolTable* st = current_scope();
+              if (st) {
+                  Symbol* sym = st->insert($1, Type(TYPE_INT));
+                  if (sym) {
+                      sym->is_enum_constant = true;
+                      sym->enum_value = value;
+                  }
+              }
+          }
+          free($1);
+      }
+	| IDENTIFIER '=' constant_expression {
+          if (current_enum) {
+              // Evaluate constant expression to get explicit value
+              $3->generate_tac();
+              int value = 0;
+              
+              // Extract integer value from constant expression
+              PrimaryExpression* prim = dynamic_cast<PrimaryExpression*>($3);
+              if (prim && prim->prim_type == PrimaryExpression::PRIM_INT_CONSTANT) {
+                  value = prim->int_value;
+              } else if ($3->result && $3->result->type == TACOperand::OPERAND_CONSTANT) {
+                  value = atoi($3->result->name.c_str());
+              } else {
+                  fprintf(stderr, "[Error] Line %d: Enum value must be an integer constant\n", yylineno);
+                  semantic_error_count++;
+              }
+              
+              current_enum->add_member($1, value);
+              
+              if (debug) printf("[ENUM] Member '%s' = %d (explicit)\n", $1, value);
+              
+              // Insert enum member as integer constant in symbol table
+              SymbolTable* st = current_scope();
+              if (st) {
+                  Symbol* sym = st->insert($1, Type(TYPE_INT));
+                  if (sym) {
+                      sym->is_enum_constant = true;
+                      sym->enum_value = value;
+                  }
+              }
+              
+              delete $3;
+          }
+          free($1);
+      }
 	;
 
 specifier_qualifier_list
@@ -670,13 +763,43 @@ direct_declarator
             $3->generate_tac();
             int array_size = 0;
             
-            // Extract size from constant expression
-            if ($3->result && $3->result->type == TACOperand::OPERAND_CONSTANT) {
-                array_size = atoi($3->result->name.c_str());
-            } else {
-                fprintf(stderr, "[Error] Line %d: Array size must be a constant expression\n", yylineno);
+            // Type check: array dimension must be integer type (not float)
+            if (!$3->type) {
+                fprintf(stderr, "[Error] Line %d: Array dimension has no type information\n", yylineno);
                 semantic_error_count++;
-                array_size = 0;
+                array_size = 1; // Safe default
+            } else if ($3->type->base_type == TYPE_FLOAT) {
+                fprintf(stderr, "[Error] Line %d: Array dimension must be integer, not float\n", yylineno);
+                semantic_error_count++;
+                array_size = 1; // Safe default
+            } else {
+                // Extract integer value based on expression type
+                PrimaryExpression* prim = dynamic_cast<PrimaryExpression*>($3);
+                if (prim) {
+                    if (prim->prim_type == PrimaryExpression::PRIM_INT_CONSTANT) {
+                        array_size = prim->int_value;
+                    } else if (prim->prim_type == PrimaryExpression::PRIM_CHAR_CONSTANT) {
+                        array_size = (int)prim->char_value; // Convert char to int (e.g., 'A' -> 65)
+                    } else {
+                        fprintf(stderr, "[Error] Line %d: Array size must be an integer or character constant\n", yylineno);
+                        semantic_error_count++;
+                        array_size = 1;
+                    }
+                } else if ($3->result && $3->result->type == TACOperand::OPERAND_CONSTANT) {
+                    // Fallback: try to parse as integer from TAC operand
+                    array_size = atoi($3->result->name.c_str());
+                } else {
+                    fprintf(stderr, "[Error] Line %d: Array size must be a constant expression\n", yylineno);
+                    semantic_error_count++;
+                    array_size = 1;
+                }
+                
+                // Validate that size is positive
+                if (array_size <= 0) {
+                    fprintf(stderr, "[Error] Line %d: Array size must be positive (got %d)\n", yylineno, array_size);
+                    semantic_error_count++;
+                    array_size = 1; // Safe default
+                }
             }
             
             // Add to array sizes (in reverse order, will be reversed later)

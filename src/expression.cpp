@@ -115,6 +115,21 @@ void PrimaryExpression::generate_tac()
     {
     case PRIM_IDENTIFIER:
     {
+        // Check if this is an enum member first
+        if (is_enum_member(name))
+        {
+            // Replace enum member with its constant value
+            int value = get_enum_member_value(name);
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, std::to_string(value));
+            type = new Type(TYPE_INT);
+            if (debug)
+            {
+                cout << "[AST] Enum member: " << name << " = " << value << endl;
+            }
+            break;
+        }
+
+        // Otherwise, normal identifier lookup
         // Use cached symbol from construction time (correct scope)
         Symbol *sym = symbol_ref;
         if (!sym)
@@ -346,6 +361,46 @@ void BinaryExpression::generate_tac()
         return;
     }
 
+    // ========================================================================
+    // POINTER ARITHMETIC HANDLING
+    // ========================================================================
+    bool left_is_pointer = left->type->is_pointer();
+    bool right_is_pointer = right->type->is_pointer();
+    bool left_is_integer = left->type->is_integer();
+    bool right_is_integer = right->type->is_integer();
+
+    // Handle pointer + integer
+    if (op == TAC_ADD && left_is_pointer && right_is_integer)
+    {
+        handle_pointer_plus_integer(left, right);
+        return;
+    }
+
+    // Handle integer + pointer
+    if (op == TAC_ADD && left_is_integer && right_is_pointer)
+    {
+        handle_pointer_plus_integer(right, left);
+        return;
+    }
+
+    // Handle pointer - integer
+    if (op == TAC_SUB && left_is_pointer && right_is_integer)
+    {
+        handle_pointer_minus_integer(left, right);
+        return;
+    }
+
+    // Handle pointer - pointer
+    if (op == TAC_SUB && left_is_pointer && right_is_pointer)
+    {
+        handle_pointer_minus_pointer(left, right);
+        return;
+    }
+
+    // ========================================================================
+    // CONTINUE WITH NORMAL TYPE CHECKING FOR NON-POINTER OPERATIONS
+    // ========================================================================
+
     // Operator-specific type checking
     const char *op_name = nullptr;
     switch (op)
@@ -532,6 +587,116 @@ void BinaryExpression::generate_tac()
         // Add this instruction to our code
         code.push_back(tacGen.getCode().back());
     }
+}
+
+// ============================================================================
+// UNARY EXPRESSIONS (Single operand with operator)
+// Handles: -, +, ~, ++x, --x (prefix increment/decrement)
+// Type checking: Validates operand type based on operator
+// Special: Prefix inc/dec modify the variable in-place
+// ============================================================================
+
+// ============================================================================
+// BinaryExpression: Pointer Arithmetic Helper Methods
+// ============================================================================
+
+void BinaryExpression::handle_pointer_plus_integer(Expression *ptr_expr, Expression *int_expr)
+{
+    // Get element size for scaling
+    int elem_size = ptr_expr->type->get_element_size();
+
+    // Combine code from both operands
+    code.insert(code.end(), ptr_expr->code.begin(), ptr_expr->code.end());
+    code.insert(code.end(), int_expr->code.begin(), int_expr->code.end());
+
+    // Step 1: Scale the integer by element size
+    // _t1 = integer * elem_size
+    TACOperand scale_temp = tacGen.newTemp();
+    TACOperand size_operand(TACOperand::OPERAND_CONSTANT, std::to_string(elem_size));
+    tacGen.emit(TAC_MUL, scale_temp, *int_expr->result, size_operand);
+    code.push_back(tacGen.getCode().back());
+
+    // Step 2: Add scaled offset to pointer
+    // result = pointer + _t1
+    TACOperand result_temp = tacGen.newTemp();
+    tacGen.emit(TAC_ADD, result_temp, *ptr_expr->result, scale_temp);
+    code.push_back(tacGen.getCode().back());
+
+    // Result is same pointer type as input
+    result = new TACOperand(result_temp);
+    type = new Type(*ptr_expr->type);
+
+    if (debug)
+        printf("[AST] Pointer arithmetic: pointer + integer (scaled by %d)\n", elem_size);
+}
+
+void BinaryExpression::handle_pointer_minus_integer(Expression *ptr_expr, Expression *int_expr)
+{
+    // Get element size for scaling
+    int elem_size = ptr_expr->type->get_element_size();
+
+    // Combine code from both operands
+    code.insert(code.end(), ptr_expr->code.begin(), ptr_expr->code.end());
+    code.insert(code.end(), int_expr->code.begin(), int_expr->code.end());
+
+    // Step 1: Scale the integer by element size
+    // _t1 = integer * elem_size
+    TACOperand scale_temp = tacGen.newTemp();
+    TACOperand size_operand(TACOperand::OPERAND_CONSTANT, std::to_string(elem_size));
+    tacGen.emit(TAC_MUL, scale_temp, *int_expr->result, size_operand);
+    code.push_back(tacGen.getCode().back());
+
+    // Step 2: Subtract scaled offset from pointer
+    // result = pointer - _t1
+    TACOperand result_temp = tacGen.newTemp();
+    tacGen.emit(TAC_SUB, result_temp, *ptr_expr->result, scale_temp);
+    code.push_back(tacGen.getCode().back());
+
+    // Result is same pointer type as input
+    result = new TACOperand(result_temp);
+    type = new Type(*ptr_expr->type);
+
+    if (debug)
+        printf("[AST] Pointer arithmetic: pointer - integer (scaled by %d)\n", elem_size);
+}
+
+void BinaryExpression::handle_pointer_minus_pointer(Expression *left_ptr, Expression *right_ptr)
+{
+    // Type check: must be compatible pointer types
+    if (left_ptr->type->base_type != right_ptr->type->base_type ||
+        left_ptr->type->pointer_level != right_ptr->type->pointer_level)
+    {
+        fprintf(stderr, "[Type Error] Line %d: Incompatible pointer types in subtraction: %s - %s\n",
+                line_no, left_ptr->type->to_string().c_str(), right_ptr->type->to_string().c_str());
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+
+    int elem_size = left_ptr->type->get_element_size();
+
+    // Combine code from both operands
+    code.insert(code.end(), left_ptr->code.begin(), left_ptr->code.end());
+    code.insert(code.end(), right_ptr->code.begin(), right_ptr->code.end());
+
+    // Step 1: Byte-level subtraction
+    // _t1 = left_ptr - right_ptr
+    TACOperand diff_temp = tacGen.newTemp();
+    tacGen.emit(TAC_SUB, diff_temp, *left_ptr->result, *right_ptr->result);
+    code.push_back(tacGen.getCode().back());
+
+    // Step 2: Unscale by element size to get number of elements
+    // result = _t1 / elem_size
+    TACOperand result_temp = tacGen.newTemp();
+    TACOperand size_operand(TACOperand::OPERAND_CONSTANT, std::to_string(elem_size));
+    tacGen.emit(TAC_DIV, result_temp, diff_temp, size_operand);
+    code.push_back(tacGen.getCode().back());
+
+    // Result is integer (ptrdiff_t)
+    result = new TACOperand(result_temp);
+    type = new Type(TYPE_INT);
+
+    if (debug)
+        printf("[AST] Pointer arithmetic: pointer - pointer (unscaled by %d)\n", elem_size);
 }
 
 // ============================================================================
@@ -746,9 +911,9 @@ void UnaryExpression::generate_tac()
     {
         const char *op_name = (op == TAC_PRE_INC) ? "++" : "--";
 
-        if (!expr->type->is_numeric())
+        if (!expr->type->is_numeric() && !expr->type->is_pointer())
         {
-            fprintf(stderr, "[Type Error] Line %d: Prefix '%s' requires numeric operand, got %s\n",
+            fprintf(stderr, "[Type Error] Line %d: Prefix '%s' requires numeric or pointer operand, got %s\n",
                     line_no, op_name, expr->type->to_string().c_str());
             type = new Type(TYPE_ERROR);
             return;
@@ -793,9 +958,24 @@ void UnaryExpression::generate_tac()
         // The result is the variable being modified
         result = new TACOperand(*expr->result);
 
-        // Emit: x = x + 1 or x = x - 1
-        tacGen.emit(op, *result, TACOperand());
-        code.push_back(tacGen.getCode().back());
+        // Check if it's a pointer - need to scale by element size
+        if (expr->type->is_pointer())
+        {
+            // Pointer increment: p++ means p = p + sizeof(*p)
+            int elem_size = expr->type->get_element_size();
+            TACOperand size_operand(TACOperand::OPERAND_CONSTANT, std::to_string(elem_size));
+
+            // Generate: expr = expr +/- elem_size
+            TACOp add_or_sub = (op == TAC_PRE_INC) ? TAC_ADD : TAC_SUB;
+            tacGen.emit(add_or_sub, *result, *result, size_operand);
+            code.push_back(tacGen.getCode().back());
+        }
+        else
+        {
+            // Normal integer increment: x = x + 1 or x = x - 1
+            tacGen.emit(op, *result, TACOperand());
+            code.push_back(tacGen.getCode().back());
+        }
     }
     else
     {
@@ -810,8 +990,90 @@ void UnaryExpression::generate_tac()
 }
 
 // ============================================================================
-// ASSIGNMENT EXPRESSIONS (lvalue = rvalue)
-// Handles: variable assignment with type compatibility checking
+// POSTFIX EXPRESSIONS (x++ and x--)
+// Handles: expr++, expr--
+// Key: Returns OLD value before modification
+// ============================================================================
+
+PostfixExpression::PostfixExpression(TACOp operation, Expression *e)
+    : op(operation), expr(e)
+{
+}
+
+PostfixExpression::~PostfixExpression()
+{
+    delete expr;
+}
+
+string PostfixExpression::to_string() const
+{
+    string op_str = (op == TAC_POST_INC) ? "++" : "--";
+    return expr->to_string() + op_str;
+}
+
+void PostfixExpression::generate_tac()
+{
+    // STEP 1: Generate code for the operand
+    expr->generate_tac();
+    code.insert(code.end(), expr->code.begin(), expr->code.end());
+
+    // STEP 2: Type checking - must be a modifiable lvalue
+    if (!expr->type || expr->type->is_error())
+    {
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+
+    if (!expr->type->is_numeric() && !expr->type->is_pointer())
+    {
+        fprintf(stderr, "[Type Error] Line %d: Postfix %s requires numeric or pointer type, got %s\n",
+                line_no,
+                (op == TAC_POST_INC ? "++" : "--"),
+                expr->type->to_string().c_str());
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+
+    // STEP 3: Save old value to temporary (this is what makes it postfix!)
+    TACOperand old_value = tacGen.newTemp();
+    tacGen.emit(TAC_ASSIGN, old_value, *expr->result, TACOperand());
+    code.push_back(tacGen.getCode().back());
+
+    // STEP 4: Increment/decrement the variable
+    if (expr->type->is_pointer())
+    {
+        // For pointers, scale by element size
+        int elem_size = expr->type->get_element_size();
+        TACOperand size_operand(TACOperand::OPERAND_CONSTANT, std::to_string(elem_size));
+        TACOp add_or_sub = (op == TAC_POST_INC) ? TAC_ADD : TAC_SUB;
+
+        TACOperand temp = tacGen.newTemp();
+        tacGen.emit(add_or_sub, temp, *expr->result, size_operand);
+        code.push_back(tacGen.getCode().back());
+
+        tacGen.emit(TAC_ASSIGN, *expr->result, temp, TACOperand());
+        code.push_back(tacGen.getCode().back());
+    }
+    else
+    {
+        // For numeric types, use simple increment/decrement
+        TACOp actual_op = (op == TAC_POST_INC) ? TAC_PRE_INC : TAC_PRE_DEC;
+        tacGen.emit(actual_op, *expr->result, *expr->result, TACOperand());
+        code.push_back(tacGen.getCode().back());
+    }
+
+    // STEP 5: Result is the OLD value (saved temporary)
+    result = new TACOperand(old_value);
+    type = new Type(*expr->type);
+
+    if (debug)
+        printf("[AST] PostfixExpression: %s (result is old value)\n",
+               (op == TAC_POST_INC ? "++" : "--"));
+}
+
+// ============================================================================
+// ASSIGNMENT EXPRESSIONS
+// Handles: variable = expression
 // Type checking: Validates lvalue exists and types are compatible
 // Warnings: Emits warnings for implicit type conversions
 // ============================================================================
@@ -879,7 +1141,17 @@ void AssignmentExpression::generate_tac()
     {
         compatible = true;
     }
-    // Second check: numeric type conversions (only for non-pointer types)
+    // Second check: array-to-pointer decay
+    // An array T[] can be assigned to a pointer T*
+    else if (rhs->type->is_array &&
+             sym->type.pointer_level == 1 &&
+             !sym->type.is_array &&
+             sym->type.base_type == rhs->type->base_type)
+    {
+        compatible = true;
+        // Array automatically decays to pointer to first element
+    }
+    // Third check: numeric type conversions (only for non-pointer types)
     else if (sym->type.pointer_level == 0 && rhs->type->pointer_level == 0 &&
              !sym->type.is_array && !rhs->type->is_array &&
              sym->type.is_numeric() && rhs->type->is_numeric())
@@ -1316,4 +1588,9 @@ void CallExpression::generate_tac()
 CallExpression *create_call_expression(const std::string &name, const std::vector<Expression *> &args)
 {
     return new CallExpression(name, args);
+}
+
+PostfixExpression *create_postfix_expression(TACOp op, Expression *expr)
+{
+    return new PostfixExpression(op, expr);
 }
