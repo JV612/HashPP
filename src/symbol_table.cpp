@@ -170,10 +170,14 @@ int Type::get_total_size() const
     if (!is_array)
         return base_size;
 
-    // Multiply by all dimensions
+    // Multiply by all dimensions. If any dimension is non-positive (0 or -1)
+    // it means the total size is unknown at compile-time (VLA or unspecified),
+    // so return 0 to indicate unknown/variable size.
     int total = base_size;
     for (int dim_size : array_sizes)
     {
+        if (dim_size <= 0)
+            return 0; // Unknown total size (runtime-sized or unspecified)
         total *= dim_size;
     }
 
@@ -334,8 +338,21 @@ Symbol *SymbolTable::insert(const string &name, Type type)
     Symbol *sym = new Symbol(name, type, Scopelevel, currentOffset);
     table[name].push_front(sym);
 
-    // Update offset for next variable (use total size for arrays)
-    currentOffset += type.get_total_size();
+    // Update offset for next variable. For arrays try to use total size.
+    // If total size is unknown at compile time (e.g., VLA marked by 0),
+    // fall back to reserving one element's worth of space (element size)
+    int total_size = type.get_total_size();
+    if (total_size > 0)
+    {
+        currentOffset += total_size;
+    }
+    else
+    {
+        int elem = type.get_element_size();
+        if (elem > 0)
+            currentOffset += elem; // reserve at least one element
+        // else leave offset unchanged
+    }
 
     if (debug)
     {
@@ -636,5 +653,6 @@ void register_builtin_io_functions()
     vector<Type> scan_string_params = {Type(TYPE_CHAR, 1)}; // char* parameter
     register_function("scan_string", scan_string_params, Type(TYPE_VOID));
 
-    cout << "[COMPILER] Registered 9 built-in I/O functions" << endl;
+    if (debug)
+        cout << "[COMPILER] Registered 9 built-in I/O functions" << endl;
 }
