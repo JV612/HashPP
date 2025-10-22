@@ -1445,8 +1445,20 @@ void ArrayAccessExpression::generate_tac()
     // Check that array is actually an array or pointer
     if (!array->type->is_array && !array->type->is_pointer())
     {
-        fprintf(stderr, "[Type Error] Line %d: Subscripted value is not an array or pointer (type: %s)\n",
-                line_no, array->type->to_string().c_str());
+        // Prefer to report the line number of the array expression if available
+        int err_line = (array->line_no != 0) ? array->line_no : line_no;
+
+        // Try to include the identifier name if this is a primary identifier
+        std::string name_hint;
+        PrimaryExpression *prim = dynamic_cast<PrimaryExpression *>(array);
+        if (prim && prim->prim_type == PrimaryExpression::PRIM_IDENTIFIER)
+        {
+            name_hint = std::string(" '") + prim->name + std::string("'");
+        }
+
+        fprintf(stderr, "[Type Error] Line %d: Subscripted value is not an array or pointer%s (type: %s)\n",
+                err_line, name_hint.c_str(), array->type->to_string().c_str());
+        semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
     }
