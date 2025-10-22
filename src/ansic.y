@@ -498,6 +498,23 @@ init_declarator
               
               // Array sizes are already in correct order (left-to-right as declared)
               var_type->array_sizes = current_array_sizes;
+              // If this is an array with unspecified size (e.g., int a[];) and
+              // there is no initializer, that's a semantic error in C.
+              if (var_type->is_array) {
+                  bool has_unspecified = false;
+                  for (int i = 0; i < (int)var_type->array_sizes.size(); ++i) {
+                      if (var_type->array_sizes[i] == 0) { has_unspecified = true; break; }
+                  }
+                  if (has_unspecified) {
+                      fprintf(stderr, "[Error] Line %d: Array size not specified for '%s'\n", yylineno, $1);
+                      semantic_error_count++;
+                      // Mark the variable type as an error to avoid cascading failures
+                      var_type->base_type = TYPE_ERROR;
+                      var_type->is_array = false;
+                      var_type->array_sizes.clear();
+                      var_type->array_dim = 0;
+                  }
+              }
               
               VariableDeclaration* decl = create_variable_declaration(
                   var_type,
@@ -787,13 +804,13 @@ direct_declarator
         { 
             $$ = $2; 
         }
-    | direct_declarator '[' constant_expression ']'
+    | direct_declarator '[' expression ']'
         {
-            // Array declarator: arr[size]
-            // Evaluate constant expression to get size
+            // Array declarator: arr[expr]
+            // Evaluate expression to perform type checking and possibly constant-fold
             $3->generate_tac();
             int array_size = 0;
-            
+
             // Type check: array dimension must be integer type (not float)
             if (!$3->type) {
                 fprintf(stderr, "[Error] Line %d: Array dimension has no type information\n", yylineno);
@@ -804,39 +821,44 @@ direct_declarator
                 semantic_error_count++;
                 array_size = 1; // Safe default
             } else {
-                // Extract integer value based on expression type
+                // If expression is a compile-time integer constant, use it as size
                 PrimaryExpression* prim = dynamic_cast<PrimaryExpression*>($3);
-                if (prim) {
-                    if (prim->prim_type == PrimaryExpression::PRIM_INT_CONSTANT) {
-                        array_size = prim->int_value;
-                    } else if (prim->prim_type == PrimaryExpression::PRIM_CHAR_CONSTANT) {
-                        array_size = (int)prim->char_value; // Convert char to int (e.g., 'A' -> 65)
-                    } else {
-                        fprintf(stderr, "[Error] Line %d: Array size must be an integer or character constant\n", yylineno);
-                        semantic_error_count++;
-                        array_size = 1;
-                    }
-                } else if ($3->result && $3->result->type == TACOperand::OPERAND_CONSTANT) {
+                if (prim && prim->prim_type == PrimaryExpression::PRIM_INT_CONSTANT) {
+                    array_size = prim->int_value;
+                }
+                else if (prim && prim->prim_type == PrimaryExpression::PRIM_CHAR_CONSTANT) {
+                    array_size = (int)prim->char_value; // char constant allowed
+                }
+                else if ($3->result && $3->result->type == TACOperand::OPERAND_CONSTANT) {
                     // Fallback: try to parse as integer from TAC operand
                     array_size = atoi($3->result->name.c_str());
-                } else {
-                    fprintf(stderr, "[Error] Line %d: Array size must be a constant expression\n", yylineno);
-                    semantic_error_count++;
-                    array_size = 1;
                 }
-                
-                // Validate that size is positive
-                if (array_size <= 0) {
+                else {
+                    // Non-constant but integer-typed expression -> Variable Length Array (VLA)
+                    if ($3->type->is_integer()) {
+                        array_size = -1; // Use -1 to mark runtime-sized dimension (VLA)
+                    } else {
+                        fprintf(stderr, "[Error] Line %d: Array size must be an integer expression\n", yylineno);
+                        semantic_error_count++;
+                        array_size = 1; // Safe default
+                    }
+                }
+
+                // If we have a compile-time size, validate positivity
+                if (array_size > 0) {
+                    // OK
+                } else if (array_size == 0) {
                     fprintf(stderr, "[Error] Line %d: Array size must be positive (got %d)\n", yylineno, array_size);
                     semantic_error_count++;
                     array_size = 1; // Safe default
                 }
+                // if array_size == -1 -> VLA, allowed
             }
-            
+
             // Add to array sizes (in reverse order, will be reversed later)
             current_array_sizes.push_back(array_size);
             current_is_array = true;
-            
+
             $$ = $1;  // Return the base identifier
         }
     | direct_declarator '[' ']'
