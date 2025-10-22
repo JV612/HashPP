@@ -369,18 +369,49 @@ conditional_expression
 	;
 
 assignment_expression
-	: conditional_expression
+    : conditional_expression
         { $$ = $1; }
-	| IDENTIFIER '=' assignment_expression
+    | IDENTIFIER '=' assignment_expression
         {
             $$ = create_assignment_expression($1, $3);
         }
-	| unary_expression '=' assignment_expression
+    | unary_expression '=' assignment_expression
         {
             // General assignment (LHS can be *ptr, arr[i], etc.)
             $$ = create_general_assignment_expression($1, $3);
         }
-	;
+    | IDENTIFIER ADD_ASSIGN assignment_expression
+        {
+            // a += b becomes a = a + b
+            Expression* lhs = create_primary_expression($1);
+            Expression* rhs = create_binary_expression(lhs, TAC_ADD, $3);
+            $$ = create_assignment_expression($1, rhs);
+        }
+    | IDENTIFIER SUB_ASSIGN assignment_expression
+        {
+            Expression* lhs = create_primary_expression($1);
+            Expression* rhs = create_binary_expression(lhs, TAC_SUB, $3);
+            $$ = create_assignment_expression($1, rhs);
+        }
+    | IDENTIFIER MUL_ASSIGN assignment_expression
+        {
+            Expression* lhs = create_primary_expression($1);
+            Expression* rhs = create_binary_expression(lhs, TAC_MUL, $3);
+            $$ = create_assignment_expression($1, rhs);
+        }
+    | IDENTIFIER DIV_ASSIGN assignment_expression
+        {
+            Expression* lhs = create_primary_expression($1);
+            Expression* rhs = create_binary_expression(lhs, TAC_DIV, $3);
+            $$ = create_assignment_expression($1, rhs);
+        }
+    | IDENTIFIER MOD_ASSIGN assignment_expression
+        {
+            Expression* lhs = create_primary_expression($1);
+            Expression* rhs = create_binary_expression(lhs, TAC_MOD, $3);
+            $$ = create_assignment_expression($1, rhs);
+        }
+    ;
 
 assignment_operator
 	: '='
@@ -1125,6 +1156,16 @@ external_declaration
     | declaration
         {
             // Handle global declarations: insert into global scope and generate TAC
+            // First, handle all pending declarators from comma-separated list
+            for (Declaration* decl : pending_declarator_tac) {
+                if (decl) {
+                    decl->generate_tac();
+                    delete decl;
+                }
+            }
+            pending_declarator_tac.clear();
+            
+            // Then handle the final declarator
             if ($1) {
                 $1->insert_symbol();
                 $1->generate_tac();
