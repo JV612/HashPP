@@ -24,6 +24,9 @@ int current_pointer_level = 0;
 bool current_is_array = false;
 std::vector<int> current_array_sizes;
 
+// Track storage class for current declaration
+bool current_is_static = false;
+
 // Track current enum being parsed
 EnumType* current_enum = nullptr;
 
@@ -42,6 +45,11 @@ bool pending_function_header = false;
 std::vector<std::pair<std::string, Type>> pending_function_params;
 // Also keep just the type list for signature registration
 std::vector<Type> pending_function_param_types;
+
+// Helper function to create variable declarations with static support
+VariableDeclaration* create_variable_declaration(Type* var_type, const char* var_name, Expression* initializer) {
+    return new VariableDeclaration(var_type, var_name, initializer, current_is_static);
+}
 
 %}
 
@@ -463,12 +471,13 @@ declaration
 	;
 
 declaration_specifiers
-	: storage_class_specifier
-	| storage_class_specifier declaration_specifiers
-	| type_specifier
-	| type_specifier declaration_specifiers
-	| type_qualifier
-	| type_qualifier declaration_specifiers
+	: storage_class_specifier // Ex:- static, typedef
+	| storage_class_specifier type_specifier // Ex:- static int
+	| storage_class_specifier type_qualifier type_specifier // Ex:- static const int
+	| type_specifier // Ex:- int
+	| type_qualifier type_specifier // Ex:- const int
+	| storage_class_specifier type_qualifier // Ex:- static const (followed by type elsewhere)
+	| type_qualifier // Ex:- const (followed by type elsewhere)
 	;
 
 init_declarator_list
@@ -527,6 +536,7 @@ init_declarator
               current_pointer_level = 0;
               current_is_array = false;
               current_array_sizes.clear();
+              current_is_static = false;
           } else {
               $$ = nullptr;
           }
@@ -554,6 +564,7 @@ init_declarator
               current_pointer_level = 0;
               current_is_array = false;
               current_array_sizes.clear();
+              current_is_static = false;
           } else {
               $$ = nullptr;
           }
@@ -564,6 +575,10 @@ init_declarator
 storage_class_specifier
 	: TYPEDEF
 	| STATIC
+        {
+            current_is_static = true;
+            if (debug) printf("[Parser] Found static storage class\n");
+        }
 	;
 
 type_specifier
@@ -1198,7 +1213,7 @@ external_declaration
 	;
     
 function_definition
-    : declaration_specifiers declarator declaration_list compound_statement
+    : declaration_specifiers declarator declaration_list
         {
             // Set current function return type using header snapshot to avoid later contamination
             if (pending_function_header) {
@@ -1208,17 +1223,21 @@ function_definition
                 current_function_return_type.pointer_level = current_pointer_level;
             }
             // Register function signature with captured pending_function_params
-                FunctionSignature *func_sig = register_function(std::string($2), pending_function_param_types, current_function_return_type);
-                pending_function_param_types.clear();
+            FunctionSignature *func_sig = register_function(std::string($2), pending_function_param_types, current_function_return_type);
+            pending_function_param_types.clear();
+            // Set current function for static variable handling BEFORE parsing compound statement
+            set_current_function(func_sig);
             // Emit function entry label with function name
-                tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL,mangle_function_for_tac(std::string($2), *func_sig)), TACOperand());
+            tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL,mangle_function_for_tac(std::string($2), *func_sig)), TACOperand());
             
             // Reset return flag for new function
             current_function_has_return = false;
-            
-            if ($4) {
+        }
+        compound_statement
+        {
+            if ($5) {
                 if(debug) printf("\n[Function] Generating TAC for function body\n");
-                $4->generate_tac();
+                $5->generate_tac();
             }
             
             // Check for missing return statements
@@ -1237,11 +1256,13 @@ function_definition
             
             // Reset function return type (no active function)
             current_function_return_type = Type(TYPE_ERROR);
+            // Clear current function context
+            set_current_function(nullptr);
             // Clear header snapshot
             pending_function_header = false;
             pending_function_name.clear();
         }
-    | declaration_specifiers declarator compound_statement
+    | declaration_specifiers declarator
         {
             // Set current function return type using header snapshot to avoid later contamination
             if (pending_function_header) {
@@ -1251,19 +1272,23 @@ function_definition
                 current_function_return_type.pointer_level = current_pointer_level;
             }
             // Register function signature
-                FunctionSignature *func_sig = register_function(std::string($2), pending_function_param_types, current_function_return_type);
-                pending_function_param_types.clear();
+            FunctionSignature *func_sig = register_function(std::string($2), pending_function_param_types, current_function_return_type);
+            pending_function_param_types.clear();
+            // Set current function for static variable handling BEFORE parsing compound statement
+            set_current_function(func_sig);
             // Emit function entry label with function name
             tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL,mangle_function_for_tac(std::string($2), *func_sig)), TACOperand());
             
             // Reset return flag for new function
             current_function_has_return = false;
-            
-            if ($3) {
+        }
+        compound_statement
+        {
+            if ($4) {
                 if(debug) printf("\n[Function] Generating TAC for function body\n");
-                $3->generate_tac();
+                $4->generate_tac();
                 // Backpatch any remaining nextlist to end of function
-                backpatch($3->nextlist, tacGen.nextinstr());
+                backpatch($4->nextlist, tacGen.nextinstr());
             }
             
             // Check for missing return statements
@@ -1282,23 +1307,75 @@ function_definition
             
             // Reset function return type (no active function)
             current_function_return_type = Type(TYPE_ERROR);
+            // Clear current function context
+            set_current_function(nullptr);
             // Clear header snapshot
             pending_function_header = false;
             pending_function_name.clear();
         }
-    | declarator declaration_list compound_statement
+    | declarator declaration_list
         {
             // Old-style C function - assume int return type
             current_function_return_type = Type(TYPE_INT);
             current_function_return_type.pointer_level = current_pointer_level;
             // Register with assumed int return type
             FunctionSignature *func_sig = register_function(std::string($1), pending_function_param_types, current_function_return_type);
+            // Set current function for static variable handling BEFORE parsing compound statement
+            set_current_function(func_sig);
             // Emit function entry label with function name
             tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL,mangle_function_for_tac(std::string($1), *func_sig)), TACOperand());
             
             // Reset return flag for new function
             current_function_has_return = false;
+        }
+        compound_statement
+        {
+            if ($4) {
+                if(debug) printf("\n[Function] Generating TAC for function body\n");
+                $4->generate_tac();
+                // Backpatch any remaining nextlist to end of function
+                backpatch($4->nextlist, tacGen.nextinstr());
+            }
             
+            // Check for missing return statements
+            if (!current_function_has_return) {
+                if (current_function_return_type.base_type == TYPE_VOID) {
+                    // Emit implicit return for void functions
+                    tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
+                    if(debug) printf("[Function] Added implicit return for void function '%s'\n", std::string($1).c_str());
+                } else {
+                    // Error for non-void functions without return
+                    fprintf(stderr, "[Semantic Error] Line %d: Function '%s' with non-void return type must have a return statement\n", 
+                            yylloc.first_line, std::string($1).c_str());
+                    semantic_error_count++;
+                }
+            }
+            
+            // Reset function return type (no active function)
+            current_function_return_type = Type(TYPE_ERROR);
+            // Clear current function context
+            set_current_function(nullptr);
+            // Clear header snapshot (not used here, but reset for safety)
+            pending_function_header = false;
+            pending_function_name.clear();
+        }
+    | declarator
+        {
+            // Old-style C function - assume int return type
+            current_function_return_type = Type(TYPE_INT);
+            current_function_return_type.pointer_level = current_pointer_level;
+            
+            FunctionSignature *func_sig = register_function(std::string($1), pending_function_param_types, current_function_return_type);
+            // Set current function for static variable handling BEFORE parsing compound statement
+            set_current_function(func_sig);
+            // Emit function entry label with function name
+            tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL,mangle_function_for_tac(std::string($1), *func_sig)), TACOperand());
+            
+            // Reset return flag for new function
+            current_function_has_return = false;
+        }
+        compound_statement
+        {
             if ($3) {
                 if(debug) printf("\n[Function] Generating TAC for function body\n");
                 $3->generate_tac();
@@ -1322,46 +1399,8 @@ function_definition
             
             // Reset function return type (no active function)
             current_function_return_type = Type(TYPE_ERROR);
-            // Clear header snapshot (not used here, but reset for safety)
-            pending_function_header = false;
-            pending_function_name.clear();
-        }
-    | declarator compound_statement
-        {
-            // Old-style C function - assume int return type
-            current_function_return_type = Type(TYPE_INT);
-            current_function_return_type.pointer_level = current_pointer_level;
-            
-            FunctionSignature *func_sig = register_function(std::string($1), pending_function_param_types, current_function_return_type);
-            // Emit function entry label with function name
-            tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL,mangle_function_for_tac(std::string($1), *func_sig)), TACOperand());
-            
-            // Reset return flag for new function
-            current_function_has_return = false;
-            
-            if ($2) {
-                if(debug) printf("\n[Function] Generating TAC for function body\n");
-                $2->generate_tac();
-                // Backpatch any remaining nextlist to end of function
-                backpatch($2->nextlist, tacGen.nextinstr());
-            }
-            
-            // Check for missing return statements
-            if (!current_function_has_return) {
-                if (current_function_return_type.base_type == TYPE_VOID) {
-                    // Emit implicit return for void functions
-                    tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
-                    if(debug) printf("[Function] Added implicit return for void function '%s'\n", std::string($1).c_str());
-                } else {
-                    // Error for non-void functions without return
-                    fprintf(stderr, "[Semantic Error] Line %d: Function '%s' with non-void return type must have a return statement\n", 
-                            yylloc.first_line, std::string($1).c_str());
-                    semantic_error_count++;
-                }
-            }
-            
-            // Reset function return type (no active function)
-            current_function_return_type = Type(TYPE_ERROR);
+            // Clear current function context
+            set_current_function(nullptr);
             // Clear header snapshot (not used here, but reset for safety)
             pending_function_header = false;
             pending_function_name.clear();
@@ -1380,8 +1419,11 @@ void yyerror(const char *s) {
 
 int main(int argc, char *argv[]) {
 
-    // Create Symbol table for Global scope on the stack and push as current scope
-    push_scope("Global");
+    // Initialize global symbol table for global variables
+    init_global_symbol_table();
+
+    // Don't push any scope initially - global variables go into globalSymbolTable
+    // Local scopes will be pushed when entering functions/compound statements
 
     // Register built-in I/O functions in global scope
     register_builtin_io_functions();
@@ -1407,12 +1449,12 @@ int main(int argc, char *argv[]) {
     if (parse_ok && semantic_error_count == 0) {
         printf("\n✓ Parsing successful!\n");
         // Always print global symbol table before TAC generation
-        if (SymbolTable* gst = global_scope()) {
-            if(debug) printf("\n[Global Symbol Table]\n");
+        if (SymbolTable* gst = get_global_symbol_table()) {
+            printf("\n[Global Symbol Table]\n");
             gst->print();
         }
 
-        print_function_signatures();
+        if(debug) print_function_signatures();
 
         tacGen.print();
         

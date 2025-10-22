@@ -29,8 +29,8 @@ Declaration::~Declaration()
 // VARIABLE DECLARATIONS
 // ============================================================================
 
-VariableDeclaration::VariableDeclaration(Type *t, const string &name, Expression *init)
-    : var_name(name), initializer(init)
+VariableDeclaration::VariableDeclaration(Type *t, const string &name, Expression *init, bool static_var)
+    : var_name(name), initializer(init), is_static(static_var)
 {
     decl_type = t;
 }
@@ -56,17 +56,57 @@ void VariableDeclaration::insert_symbol()
     if (debug)
     {
         cout << "[AST] Variable declaration: " << var_name
-             << " (type: " << decl_type->to_string() << ")" << endl;
+             << " (type: " << decl_type->to_string() 
+             << ", static: " << (is_static ? "yes" : "no") << ")" << endl;
     }
 
-    // Insert into symbol table
-    SymbolTable *st = current_scope();
-    if (!st)
+    // Check if this is a static variable
+    if (is_static)
     {
-        cerr << "[Internal Error] No active scope to insert symbol '" << var_name << "'\n";
-        return;
+        // Static variables - global if at global scope, function-level if inside function
+        if (!current_scope())
+        {
+            // Global static variable - store in global symbol table
+            inserted_symbol = insert_global_symbol(var_name, *decl_type);
+            if (debug)
+            {
+                cout << "[AST] Inserted global static variable: " << var_name << endl;
+            }
+        }
+        else
+        {
+            // Function-local static variable - store in function's static table
+            SymbolTable *st = current_scope();
+            inserted_symbol = insert_function_static_symbol(var_name, *decl_type, st->Scopelevel);
+            if (debug)
+            {
+                cout << "[AST] Inserted function static variable: " << var_name << endl;
+            }
+        }
     }
-    inserted_symbol = st->insert(var_name, *decl_type);
+    else
+    {
+        // Non-static variables
+        if (!current_scope())
+        {
+            // Global non-static variable - store in global symbol table
+            inserted_symbol = insert_global_symbol(var_name, *decl_type);
+            if (debug)
+            {
+                cout << "[AST] Inserted global variable: " << var_name << endl;
+            }
+        }
+        else
+        {
+            // Local variable - store in current local scope
+            SymbolTable *st = current_scope();
+            inserted_symbol = st->insert(var_name, *decl_type);
+            if (debug)
+            {
+                cout << "[AST] Inserted local variable: " << var_name << " in scope " << st->Scopelevel << endl;
+            }
+        }
+    }
 }
 
 void VariableDeclaration::generate_tac()

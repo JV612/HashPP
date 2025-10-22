@@ -7,12 +7,14 @@ using namespace std;
 // Global symbol table stack
 
 vector<SymbolTable *> symbolTableStack;
+SymbolTable *globalSymbolTable = nullptr;
 int next_scope_id = 0;
 
 int semantic_error_count = 0;
 bool current_function_has_return = false;
 bool debug = false;
 std::vector<FunctionSignature> function_signatures;
+FunctionSignature *current_function_signature = nullptr;
 
 // ============================================================================
 // Enum Type Implementation
@@ -422,12 +424,32 @@ void pop_scope()
 
 Symbol *lookup_symbol(const std::string &name)
 {
+    // First, search through local scopes (stack)
     for (SymbolTable *st = current_scope(); st != nullptr; st = st->Parent)
     {
         Symbol *s = st->lookup(name);
         if (s)
             return s;
     }
+    
+    // Second, check function static variables if we're in a function
+    if (current_function_signature)
+    {
+        // Get current scope level for static variable lookup
+        int currentScopeLevel = current_scope() ? current_scope()->Scopelevel : 0;
+        Symbol *s = lookup_function_static_symbol(name, currentScopeLevel);
+        if (s)
+            return s;
+    }
+    
+    // Third, check global symbol table
+    if (globalSymbolTable)
+    {
+        Symbol *s = globalSymbolTable->lookup(name);
+        if (s)
+            return s;
+    }
+    
     return nullptr;
 }
 
@@ -451,6 +473,140 @@ std::string mangle_function_for_tac(const std::string &name, const FunctionSigna
         return name;
     else
         return name + "_" + std::to_string(fs.FunctionID);
+}
+
+// ============================================================================
+// Global Symbol Table Management
+// ============================================================================
+
+void init_global_symbol_table()
+{
+    if (!globalSymbolTable)
+    {
+        globalSymbolTable = new SymbolTable();
+        globalSymbolTable->Scopelevel = 0; // Global scope level
+        globalSymbolTable->FunctionName = "Global";
+        if (debug)
+            cout << "[Global] Initialized global symbol table" << endl;
+    }
+}
+
+void cleanup_global_symbol_table()
+{
+    if (globalSymbolTable)
+    {
+        delete globalSymbolTable;
+        globalSymbolTable = nullptr;
+        if (debug)
+            cout << "[Global] Cleaned up global symbol table" << endl;
+    }
+}
+
+SymbolTable *get_global_symbol_table()
+{
+    return globalSymbolTable;
+}
+
+Symbol *insert_global_symbol(const std::string &name, Type type)
+{
+    if (!globalSymbolTable)
+        init_global_symbol_table();
+    
+    Symbol *sym = globalSymbolTable->insert(name, type);
+    if (sym)
+    {
+        sym->is_static = true; // All global variables are treated as static
+        if (debug)
+            cout << "[Global] Inserted global symbol: " << name << " (type: " << type.to_string() << ")" << endl;
+    }
+    return sym;
+}
+
+// ============================================================================
+// Function Static Variable Management
+// ============================================================================
+
+void set_current_function(FunctionSignature *func)
+{
+    current_function_signature = func;
+    if (debug && func)
+        cout << "[Static] Set current function: " << func->name << endl;
+}
+
+FunctionSignature *get_current_function()
+{
+    return current_function_signature;
+}
+
+Symbol *insert_function_static_symbol(const std::string &varName, Type type, int scopeLevel)
+{
+    if (!current_function_signature)
+    {
+        cerr << "[Error] Cannot insert static variable '" << varName << "' - no current function" << endl;
+        return nullptr;
+    }
+    
+    // Initialize static table for this function if not exists
+    if (!current_function_signature->static_table)
+    {
+        current_function_signature->static_table = new SymbolTable();
+        current_function_signature->static_table->Scopelevel = ++next_scope_id;
+        current_function_signature->static_table->FunctionName = current_function_signature->name + "_static";
+        if (debug)
+            cout << "[Static] Created static table for function: " << current_function_signature->name << endl;
+    }
+    
+    // Create unique name with scope level to handle nested scopes
+    string uniqueName = varName + "_scope" + to_string(scopeLevel);
+    
+    // Check for redeclaration in the same scope
+    Symbol *existing = current_function_signature->static_table->lookup(uniqueName);
+    if (existing)
+    {
+        cerr << "[Semantic Error] Redeclaration of static variable '" << varName 
+             << "' in scope " << scopeLevel << " of function '" 
+             << current_function_signature->name << "'" << endl;
+        semantic_error_count++;
+        return nullptr;
+    }
+    
+    // Insert the static variable
+    Symbol *sym = current_function_signature->static_table->insert(uniqueName, type);
+    if (sym)
+    {
+        sym->is_static = true;
+        // Store original name and scope info for lookup
+        sym->name = varName; // Keep original name for lookup purposes
+        if (debug)
+            cout << "[Static] Inserted function static: " << varName 
+                 << " (unique: " << uniqueName << ") in " << current_function_signature->name 
+                 << " scope " << scopeLevel << endl;
+    }
+    return sym;
+}
+
+Symbol *lookup_function_static_symbol(const std::string &varName, int scopeLevel)
+{
+    if (!current_function_signature || !current_function_signature->static_table)
+        return nullptr;
+    
+    // Try to find with scope-specific name first
+    string uniqueName = varName + "_scope" + to_string(scopeLevel);
+    Symbol *sym = current_function_signature->static_table->lookup(uniqueName);
+    if (sym)
+        return sym;
+    
+    // If not found with current scope, try broader search through all scopes
+    // (for when variable is declared in outer scope but accessed in inner scope)
+    for (int scope = scopeLevel; scope >= 0; scope--)
+    {
+        string searchName = varName + "_scope" + to_string(scope);
+        sym = current_function_signature->static_table->lookup(searchName);
+        if (sym)
+            return sym;
+    }
+    
+    return nullptr;
 }
 
 // ===================== Function Registry =====================
@@ -479,7 +635,7 @@ FunctionSignature *register_function(const std::string &name, const std::vector<
     }
 
     // Append new function signature
-    function_signatures.push_back(FunctionSignature{name, params, retType, max_id});
+    function_signatures.push_back(FunctionSignature{name, params, retType, max_id, nullptr});
 
     return &function_signatures.back();
 }

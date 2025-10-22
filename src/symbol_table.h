@@ -89,13 +89,14 @@ public:
     Type type;
     int scope;
     int offset; // Memory offset
+    bool is_static; // Whether this is a static variable
 
     // For enum constants
     bool is_enum_constant;
     int enum_value;
 
     Symbol(std::string n, Type t, int s, int off)
-        : name(n), type(t), scope(s), offset(off), is_enum_constant(false), enum_value(0) {}
+        : name(n), type(t), scope(s), offset(off), is_static(false), is_enum_constant(false), enum_value(0) {}
 };
 
 // Minimal Symbol Table for Phase 1
@@ -130,6 +131,9 @@ public:
 // Global stack of symbol tables for nested scopes
 extern std::vector<SymbolTable *> symbolTableStack;
 
+// Global symbol table for all global variables (static and non-static)
+extern SymbolTable *globalSymbolTable;
+
 // Global unique scope id generator
 extern int next_scope_id;
 
@@ -142,8 +146,14 @@ void pop_scope();
 SymbolTable *current_scope();
 // - get global scope (bottom of stack or nullptr)
 SymbolTable *global_scope();
-// - recursive lookup starting from current scope up to parents
+// - recursive lookup starting from current scope up to parents, then global table
 Symbol *lookup_symbol(const std::string &name);
+
+// Global symbol table management
+void init_global_symbol_table();
+void cleanup_global_symbol_table();
+SymbolTable *get_global_symbol_table();
+Symbol *insert_global_symbol(const std::string &name, Type type);
 
 // Utility: mangle an identifier for TAC using the symbol's scope (name_scope)
 std::string mangle_for_tac(const std::string &name, const Symbol *sym);
@@ -164,6 +174,7 @@ struct FunctionSignature
     std::vector<Type> params; // parameter types in order
     Type returnType;          // function return type
     int FunctionID;           // unique function ID for overloading
+    SymbolTable *static_table;
 };
 
 // magle functionID for TAC
@@ -173,6 +184,9 @@ std::string mangle_function_for_tac(const std::string &name, const FunctionSigna
 // Global list of declared function signatures
 extern std::vector<FunctionSignature> function_signatures;
 
+// Current function being processed (for static variable handling)
+extern FunctionSignature *current_function_signature;
+
 // Register a function (name + params + return type)
 FunctionSignature *register_function(const std::string &name, const std::vector<Type> &params, const Type &retType);
 
@@ -180,6 +194,12 @@ FunctionSignature *register_function(const std::string &name, const std::vector<
 int find_function_match(const std::string &name, const std::vector<Type> &argTypes);
 
 void print_function_signatures();
+
+// Function static variable management
+void set_current_function(FunctionSignature *func);
+FunctionSignature *get_current_function();
+Symbol *insert_function_static_symbol(const std::string &varName, Type type, int scopeLevel);
+Symbol *lookup_function_static_symbol(const std::string &varName, int scopeLevel);
 
 // Register built-in I/O functions
 void register_builtin_io_functions();
