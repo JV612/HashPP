@@ -19,6 +19,10 @@ Type current_type;
 // Current function return type (value). TYPE_ERROR sentinel means "no active function".
 Type current_function_return_type;
 
+// FIXED: Backup of current_type to prevent contamination by parameter processing  
+Type backup_current_type;
+bool in_function_declaration = false;
+
 // Track pointer levels and array dimensions for current declarator
 int current_pointer_level = 0;
 bool current_is_array = false;
@@ -471,13 +475,27 @@ declaration
 	;
 
 declaration_specifiers
-	: storage_class_specifier // Ex:- static, typedef
-	| storage_class_specifier type_specifier // Ex:- static int
-	| storage_class_specifier type_qualifier type_specifier // Ex:- static const int
-	| type_specifier // Ex:- int
-	| type_qualifier type_specifier // Ex:- const int
-	| storage_class_specifier type_qualifier // Ex:- static const (followed by type elsewhere)
-	| type_qualifier // Ex:- const (followed by type elsewhere)
+	: storage_class_specifier { 
+        if (!in_function_declaration) { backup_current_type = current_type; in_function_declaration = true; } 
+    } // Ex:- static, typedef
+	| storage_class_specifier type_specifier { 
+        if (!in_function_declaration) { backup_current_type = current_type; in_function_declaration = true; } 
+    } // Ex:- static int
+	| storage_class_specifier type_qualifier type_specifier { 
+        if (!in_function_declaration) { backup_current_type = current_type; in_function_declaration = true; } 
+    } // Ex:- static const int
+	| type_specifier { 
+        if (!in_function_declaration) { backup_current_type = current_type; in_function_declaration = true; } 
+    } // Ex:- int
+	| type_qualifier type_specifier { 
+        if (!in_function_declaration) { backup_current_type = current_type; in_function_declaration = true; } 
+    } // Ex:- const int
+	| storage_class_specifier type_qualifier { 
+        if (!in_function_declaration) { backup_current_type = current_type; in_function_declaration = true; } 
+    } // Ex:- static const (followed by type elsewhere)
+	| type_qualifier { 
+        if (!in_function_declaration) { backup_current_type = current_type; in_function_declaration = true; } 
+    } // Ex:- const (followed by type elsewhere)
 	;
 
 init_declarator_list
@@ -805,16 +823,25 @@ type_qualifier
 declarator
 	: pointer direct_declarator        
         { 
+            // FIXED: Capture clean return type before parameter processing can contaminate it
+            pending_function_return_type = current_type;
+            pending_function_return_type.pointer_level = $1;
             current_pointer_level = $1;
             $$ = $2; 
         }
 	| direct_declarator               
         { 
+            // FIXED: Capture clean return type before parameter processing can contaminate it
+            pending_function_return_type = current_type;
+            pending_function_return_type.pointer_level = 0;
             current_pointer_level = 0;
             $$ = $1; 
         }
 	| '&' direct_declarator           
         { 
+            // FIXED: Capture clean return type before parameter processing can contaminate it
+            pending_function_return_type = current_type;
+            pending_function_return_type.pointer_level = 0;
             current_pointer_level = 0;
             $$ = $2; 
         }
@@ -895,18 +922,17 @@ direct_declarator
         }
         | direct_declarator '(' parameter_type_list ')' {
                     $$ = $1;
-                    // Snapshot function header: name and return type (base + pointer level)
+                    // FIXED: Don't save contaminated current_type - it will be captured elsewhere
+                    // Just mark that this is a function and save the name
                     pending_function_header = true;
-                    pending_function_return_type = current_type;
-                    pending_function_return_type.pointer_level = current_pointer_level;
                     if ($1) pending_function_name = std::string($1);
             }
 
         | direct_declarator '(' ')' {
                     $$ = $1;
+                    // FIXED: Don't save contaminated current_type - it will be captured elsewhere  
+                    // Just mark that this is a function and save the name
                     pending_function_header = true;
-                    pending_function_return_type = current_type;
-                    pending_function_return_type.pointer_level = current_pointer_level;
                     if ($1) pending_function_name = std::string($1);
             }
     ;
@@ -940,6 +966,7 @@ parameter_list
     
 parameter_declaration
     : declaration_specifiers declarator {
+          // FIXED: Backup and restore current_type to prevent function return type contamination
           // $1 sets current_type; $2 is the parameter name
           $$ = $2;
           if ($2) {
@@ -956,6 +983,9 @@ parameter_declaration
 
               pending_function_params.emplace_back(std::string($2), param_type);
               pending_function_param_types.push_back(param_type);
+              
+              // FIXED: Restore the function return type after parameter processing
+              current_type = pending_function_return_type;
           }
       }
     | declaration_specifiers abstract_declarator
@@ -1234,13 +1264,15 @@ external_declaration
 function_definition
     : declaration_specifiers declarator declaration_list
         {
-            // Set current function return type using header snapshot to avoid later contamination
-            if (pending_function_header) {
-                current_function_return_type = pending_function_return_type;
-            } else {
-                current_function_return_type = current_type;
-                current_function_return_type.pointer_level = current_pointer_level;
-            }
+            // FIXED: Use backup of clean return type from before parameter processing
+            current_function_return_type = backup_current_type;
+            current_function_return_type.pointer_level = current_pointer_level;
+            
+            if(debug) printf("\n[DEBUG] Function return type: %s (contaminated current_type: %s)\n", 
+                current_function_return_type.to_string().c_str(), current_type.to_string().c_str());
+                
+            // Reset function declaration flag for next function
+            in_function_declaration = false;
             // Register function signature with captured pending_function_params
             FunctionSignature *func_sig = register_function(std::string($2), pending_function_param_types, current_function_return_type);
             pending_function_param_types.clear();
@@ -1285,13 +1317,15 @@ function_definition
         }
     | declaration_specifiers declarator
         {
-            // Set current function return type using header snapshot to avoid later contamination
-            if (pending_function_header) {
-                current_function_return_type = pending_function_return_type;
-            } else {
-                current_function_return_type = current_type;
-                current_function_return_type.pointer_level = current_pointer_level;
-            }
+            // FIXED: Use backup of clean return type from before parameter processing
+            current_function_return_type = backup_current_type;
+            current_function_return_type.pointer_level = current_pointer_level;
+            
+            if(debug) printf("\n[DEBUG] Function return type: %s (contaminated current_type: %s)\n", 
+                current_function_return_type.to_string().c_str(), current_type.to_string().c_str());
+                
+            // Reset function declaration flag for next function
+            in_function_declaration = false;
             // Register function signature
             FunctionSignature *func_sig = register_function(std::string($2), pending_function_param_types, current_function_return_type);
             pending_function_param_types.clear();
