@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 // Three-Address Code (TAC) for Phase 1
 
@@ -144,6 +145,16 @@ public:
     // Get all generated code
     const std::vector<TACInstruction *> &getCode() const { return code; }
     std::vector<TACInstruction *> &getCode() { return code; }
+    
+    // Label patchlists : label name -> list of instruction indices to backpatch
+    std::unordered_map<std::string, std::vector<int>> label_patchlists;
+
+    // Label positions : 
+    std::unordered_map<std::string, int> label_positions;
+
+    void emit_label(const std::string& label_name, int instr_index);
+    void emit_goto(const std::string& label_name, int instr_index);
+    void finalize_labels();
 
     // Print TAC
     void print() const;

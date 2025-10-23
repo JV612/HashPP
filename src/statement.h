@@ -313,6 +313,50 @@ class ReturnStatement : public Statement
 };
 
 /**
+ * Goto Statement - Unconditional jump to a label
+ *
+ * Syntax: goto label_name;
+ *
+ * generate_tac():
+ * - Generates a goto instruction to the target label
+ * - Label resolution is handled at the end of function processing
+ */
+class GotoStatement : public Statement
+{
+public:
+    std::string label_name; // Target label name
+
+    GotoStatement(const std::string &label);
+    virtual ~GotoStatement();
+
+    std::string to_string() const override;
+    void generate_tac() override;
+};
+
+/**
+ * Label Statement - Defines a label for goto targets
+ *
+ * Syntax: label_name: statement
+ *
+ * generate_tac():
+ * - Emits a label instruction at current position
+ * - Generates code for the wrapped statement
+ * - Registers the label in the label table for goto resolution
+ */
+class LabelStatement : public Statement
+{
+public:
+    std::string label_name; // Label name
+    Statement *statement;   // Statement following the label
+
+    LabelStatement(const std::string &label, Statement *stmt);
+    virtual ~LabelStatement();
+
+    std::string to_string() const override;
+    void generate_tac() override;
+};
+
+/**
  * Declaration Statement - Wraps a Declaration for use as a Statement
  *
  * Used primarily in for-loop initialization:
@@ -504,5 +548,7 @@ CaseLabel *create_case_label(Expression *value, Statement *stmt);
 DefaultLabel *create_default_label(Statement *stmt);
 SwitchStatement *create_switch_statement(Expression *expr, Statement *body);
 ReturnStatement *create_return_statement(Expression *expr = nullptr);
+GotoStatement *create_goto_statement(const std::string &label);
+LabelStatement *create_label_statement(const std::string &label, Statement *stmt);
 
 #endif // STATEMENT_H

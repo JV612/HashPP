@@ -488,7 +488,11 @@ init_declarator_list
             /* For multiple declarators, insert previous one into symbol table */
             /* and save it for deferred TAC generation */
             if ($1) {
-                $1->insert_symbol();
+                /* Insert symbol only if not already inserted (e.g., declarations with initializers) */
+                VariableDeclaration* var_decl = dynamic_cast<VariableDeclaration*>($1);
+                if (var_decl && !var_decl->inserted_symbol) {
+                    $1->insert_symbol();
+                }
                 pending_declarator_tac.push_back($1);  // Defer TAC generation
             }
             $$ = $3;  /* Return the latest declarator */
@@ -558,6 +562,12 @@ init_declarator
                   $1,
                   $3
               );
+              
+              // Insert symbol immediately for declarations with initializers
+              // This is crucial for for-loop declarations like "for (int i = 0; ...)"
+              // where the variable needs to be visible in the condition expression
+              decl->insert_symbol();
+              
               $$ = decl;
               
               // Reset for next declarator
@@ -1016,8 +1026,11 @@ statement
             /* Insert into symbol table immediately (during parsing, while scope is active) */
             /* But defer TAC generation to preserve execution order */
             if ($1) {
-                /* Insert symbol immediately but don't generate TAC yet */
-                $1->insert_symbol();
+                /* Insert symbol only if not already inserted (e.g., declarations with initializers) */
+                VariableDeclaration* var_decl = dynamic_cast<VariableDeclaration*>($1);
+                if (var_decl && !var_decl->inserted_symbol) {
+                    $1->insert_symbol();
+                }
                 /* Wrap in DeclarationStatement for deferred TAC generation */
                 $$ = create_declaration_statement($1);
             } else {
@@ -1028,7 +1041,7 @@ statement
 
 labeled_statement
     : IDENTIFIER ':' statement
-        { $$ = $3; /* For now, ignore labels */ }
+        { $$ = create_label_statement(std::string($1), $3); }
     | CASE constant_expression ':' statement
         { $$ = create_case_label($2, $4); }
     | DEFAULT ':' statement
@@ -1147,6 +1160,7 @@ iteration_statement
 	| FOR '(' declaration expression_statement ')' statement
         { 
             // Wrap declaration in DeclarationStatement
+            // (symbol already inserted during declaration parsing for declarations with initializers)
             Statement* init = $3 ? create_declaration_statement($3) : nullptr;
             
             Expression* cond = nullptr;
@@ -1159,6 +1173,7 @@ iteration_statement
 	| FOR '(' declaration expression_statement expression ')' statement
         { 
             // Wrap declaration in DeclarationStatement
+            // (symbol already inserted during declaration parsing for declarations with initializers)
             Statement* init = $3 ? create_declaration_statement($3) : nullptr;
             
             Expression* cond = nullptr;
@@ -1172,7 +1187,7 @@ iteration_statement
 
 jump_statement
     : GOTO IDENTIFIER ';'
-        { $$ = nullptr; /* Not implemented */ }
+        { $$ = create_goto_statement(std::string($2)); }
     | CONTINUE ';'
         { $$ = create_continue_statement(); }
     | BREAK ';'
@@ -1204,7 +1219,11 @@ external_declaration
             
             // Then handle the final declarator
             if ($1) {
-                $1->insert_symbol();
+                /* Insert symbol only if not already inserted (e.g., declarations with initializers) */
+                VariableDeclaration* var_decl = dynamic_cast<VariableDeclaration*>($1);
+                if (var_decl && !var_decl->inserted_symbol) {
+                    $1->insert_symbol();
+                }
                 $1->generate_tac();
                 // Optional: clean up the declaration node since it's not wrapped in a statement
                 delete $1;
@@ -1254,6 +1273,8 @@ function_definition
                 }
             }
             
+            tacGen.finalize_labels();
+
             // Reset function return type (no active function)
             current_function_return_type = Type(TYPE_ERROR);
             // Clear current function context
@@ -1305,6 +1326,8 @@ function_definition
                 }
             }
             
+            tacGen.finalize_labels();
+
             // Reset function return type (no active function)
             current_function_return_type = Type(TYPE_ERROR);
             // Clear current function context
@@ -1350,6 +1373,8 @@ function_definition
                     semantic_error_count++;
                 }
             }
+
+            tacGen.finalize_labels();
             
             // Reset function return type (no active function)
             current_function_return_type = Type(TYPE_ERROR);
@@ -1397,6 +1422,8 @@ function_definition
                 }
             }
             
+            tacGen.finalize_labels();
+
             // Reset function return type (no active function)
             current_function_return_type = Type(TYPE_ERROR);
             // Clear current function context

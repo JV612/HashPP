@@ -1318,3 +1318,103 @@ ReturnStatement *create_return_statement(Expression *expr)
 {
     return new ReturnStatement(expr);
 }
+
+// ============================================================================
+// GotoStatement Implementation
+// ============================================================================
+
+GotoStatement::GotoStatement(const std::string &label)
+    : label_name(label)
+{
+}
+
+GotoStatement::~GotoStatement()
+{
+}
+
+string GotoStatement::to_string() const
+{
+    return "goto " + label_name + ";";
+}
+
+void GotoStatement::generate_tac()
+{
+    // Emit a goto instruction to the target label
+    int goto_instr = tacGen.emit(TAC_GOTO, TACOperand(TACOperand::OPERAND_LABEL, label_name), TACOperand());
+    code.push_back(tacGen.getCode().back());
+    
+    // Register this goto for backpatching when the label is found
+    tacGen.emit_goto(label_name, goto_instr);
+
+    if (debug)
+        printf("[AST] GotoStatement: Generated goto to label '%s'\n", label_name.c_str());
+}
+
+
+// ============================================================================
+// LabelStatement Implementation  
+// ============================================================================
+
+// Fixed LabelStatement constructor
+LabelStatement::LabelStatement(const std::string &label, Statement *stmt)
+    : label_name(label), statement(stmt)
+{
+    // Do NOT emit TAC or register the label here.
+    // Label will be emitted and registered in generate_tac().
+}
+
+
+LabelStatement::~LabelStatement()
+{
+    if (statement)
+        delete statement;
+}
+
+string LabelStatement::to_string() const
+{
+    if (statement)
+        return label_name + ": " + statement->to_string();
+    return label_name + ":";
+}
+
+void LabelStatement::generate_tac()
+{
+    // Emit a label instruction at the current position
+    int label_instr = tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL, label_name), TACOperand());
+    code.push_back(tacGen.getCode().back());
+    
+    // Register the label -> gotos should jump to the NEXT instruction after the label
+    // So we register the next instruction position (label_instr + 1)
+    tacGen.emit_label(label_name, label_instr);
+
+    // Generate code for the statement following the label
+    if (statement)
+    {
+        statement->generate_tac();
+        // Append the statement's code
+        code.insert(code.end(), statement->code.begin(), statement->code.end());
+
+        // Propagate control flow lists
+        nextlist = statement->nextlist;
+        breaklist = statement->breaklist;
+        continuelist = statement->continuelist;
+    }
+
+    if (debug)
+        printf("[AST] LabelStatement: Generated label '%s' at line %d\n", label_name.c_str(), label_instr);
+}
+
+// ============================================================================
+// Helper Functions for Goto and Label Statements
+// ============================================================================
+
+GotoStatement *create_goto_statement(const std::string &label)
+{
+    return new GotoStatement(label);
+}
+
+LabelStatement *create_label_statement(const std::string &label, Statement *stmt)
+{
+    return new LabelStatement(label, stmt);
+}
+

@@ -550,7 +550,9 @@ Symbol *insert_function_static_symbol(const std::string &varName, Type type, int
     if (!current_function_signature->static_table)
     {
         current_function_signature->static_table = new SymbolTable();
-        current_function_signature->static_table->Scopelevel = ++next_scope_id;
+        // Static table doesn't need its own scope ID - it's just a storage mechanism
+        // Static variables will use the scope ID where they're declared (scopeLevel parameter)
+        current_function_signature->static_table->Scopelevel = 0; // Not used for static table itself
         current_function_signature->static_table->FunctionName = current_function_signature->name + "_static";
         if (debug)
             cout << "[Static] Created static table for function: " << current_function_signature->name << endl;
@@ -575,7 +577,9 @@ Symbol *insert_function_static_symbol(const std::string &varName, Type type, int
     if (sym)
     {
         sym->is_static = true;
-        // Store original name and scope info for lookup
+        // Override scope to be the declaring scope, not the static table's scope
+        sym->scope = scopeLevel;
+        // Store original name for lookup purposes
         sym->name = varName; // Keep original name for lookup purposes
         if (debug)
             cout << "[Static] Inserted function static: " << varName 

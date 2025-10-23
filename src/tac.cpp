@@ -178,6 +178,8 @@ string TACInstruction::to_string() const
     case TAC_GOTO:
         if (target_line >= 0)
             ss << "goto " << target_line;
+        else if (!result.is_empty() && result.type == TACOperand::OPERAND_LABEL)
+            ss << "goto " << result.to_string() << " [UNRESOLVED]";
         else
             ss << "goto [BACKPATCH]";
         break;
@@ -264,6 +266,41 @@ void TACGenerator::backpatch(InstructionList list, int target)
             code[index]->target_line = target;
         }
     }
+}
+
+void TACGenerator::emit_label(const std::string& label_name, int instr_index) {
+    label_positions[label_name] = instr_index;
+
+    // Backpatch any gotos waiting for this label
+    auto it = label_patchlists.find(label_name);
+    if (it != label_patchlists.end()) {
+        for (int idx : it->second) {
+            code[idx]->target_line = instr_index;
+        }
+        label_patchlists.erase(it);
+    }
+}
+
+void TACGenerator::emit_goto(const std::string& label_name, int instr_index) {
+    auto it = label_positions.find(label_name);
+    if (it != label_positions.end()) {
+        code[instr_index]->target_line = it->second;
+    } else {
+        label_patchlists[label_name].push_back(instr_index);
+    }
+}
+
+void TACGenerator::finalize_labels() {
+    for (const auto& entry : label_patchlists) {
+        for (int idx : entry.second) {
+            cout << "[Error] Unresolved label '" << entry.first << "' for instruction at line " << code[idx]->line_number << endl;
+            semantic_error_count++;
+
+        }
+    }
+
+    label_patchlists.clear();
+
 }
 
 void TACGenerator::print() const
