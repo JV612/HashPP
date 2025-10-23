@@ -13,6 +13,7 @@ enum PrimitiveType
     TYPE_INT,
     TYPE_FLOAT,
     TYPE_CHAR,
+    TYPE_BOOL,
     TYPE_VOID,
     TYPE_ENUM,
     TYPE_ERROR

@@ -39,34 +39,44 @@ Expression::~Expression()
 // ============================================================================
 
 PrimaryExpression::PrimaryExpression(const string &id_name)
-    : prim_type(PRIM_IDENTIFIER), name(id_name), int_value(0), char_value('\0'), float_value(0.0), expr(nullptr), symbol_ref(nullptr)
+    : prim_type(PRIM_IDENTIFIER), name(id_name), int_value(0), char_value('\0'), float_value(0.0), bool_value(false), expr(nullptr), symbol_ref(nullptr)
 {
     // Look up symbol during construction (while in correct scope)
     symbol_ref = lookup_symbol(id_name);
 }
 
 PrimaryExpression::PrimaryExpression(int value)
-    : prim_type(PRIM_INT_CONSTANT), int_value(value), char_value('\0'), float_value(0.0), expr(nullptr), symbol_ref(nullptr)
+    : prim_type(PRIM_INT_CONSTANT), int_value(value), char_value('\0'), float_value(0.0), bool_value(false), expr(nullptr), symbol_ref(nullptr)
 {
 }
 
 PrimaryExpression::PrimaryExpression(char value)
-    : prim_type(PRIM_CHAR_CONSTANT), int_value(0), char_value(value), float_value(0.0), expr(nullptr), symbol_ref(nullptr)
+    : prim_type(PRIM_CHAR_CONSTANT), int_value(0), char_value(value), float_value(0.0), bool_value(false), expr(nullptr), symbol_ref(nullptr)
 {
 }
 
 PrimaryExpression::PrimaryExpression(double value)
-    : prim_type(PRIM_FLOAT_CONSTANT), int_value(0), char_value('\0'), float_value(value), expr(nullptr), symbol_ref(nullptr)
+    : prim_type(PRIM_FLOAT_CONSTANT), int_value(0), char_value('\0'), float_value(value), bool_value(false), expr(nullptr), symbol_ref(nullptr)
 {
 }
 
 PrimaryExpression::PrimaryExpression(const string &str, bool is_string_literal)
-    : prim_type(PRIM_STRING_LITERAL), int_value(0), char_value('\0'), float_value(0.0), string_value(str), expr(nullptr), symbol_ref(nullptr)
+    : prim_type(PRIM_STRING_LITERAL), int_value(0), char_value('\0'), float_value(0.0), bool_value(false), string_value(str), expr(nullptr), symbol_ref(nullptr)
 {
 }
 
 PrimaryExpression::PrimaryExpression(Expression *e)
-    : prim_type(PRIM_PAREN_EXPR), int_value(0), char_value('\0'), float_value(0.0), expr(e), symbol_ref(nullptr)
+    : prim_type(PRIM_PAREN_EXPR), int_value(0), char_value('\0'), float_value(0.0), bool_value(false), expr(e), symbol_ref(nullptr)
+{
+}
+
+PrimaryExpression::PrimaryExpression(bool value)
+    : prim_type(PRIM_BOOL_CONSTANT), int_value(0), char_value('\0'), float_value(0.0), bool_value(value), expr(nullptr), symbol_ref(nullptr)
+{
+}
+
+PrimaryExpression::PrimaryExpression()
+    : prim_type(PRIM_NULL_CONSTANT), int_value(0), char_value('\0'), float_value(0.0), bool_value(false), expr(nullptr), symbol_ref(nullptr)
 {
 }
 
@@ -103,6 +113,10 @@ string PrimaryExpression::to_string() const
         return std::to_string(float_value);
     case PRIM_STRING_LITERAL:
         return "\"" + string_value + "\"";
+    case PRIM_BOOL_CONSTANT:
+        return bool_value ? "true" : "false";
+    case PRIM_NULL_CONSTANT:
+        return "null";
     case PRIM_PAREN_EXPR:
         return "(" + expr->to_string() + ")";
     }
@@ -203,6 +217,31 @@ void PrimaryExpression::generate_tac()
         break;
     }
 
+    case PRIM_BOOL_CONSTANT:
+    {
+        // Boolean constants (true/false)
+        result = new TACOperand(TACOperand::OPERAND_CONSTANT, bool_value ? "1" : "0");
+        type = new Type(TYPE_BOOL);
+        if (debug)
+        {
+            cout << "[AST] Boolean constant: " << (bool_value ? "true" : "false") << endl;
+        }
+        break;
+    }
+
+    case PRIM_NULL_CONSTANT:
+    {
+        // Null pointer constants (null/nullptr)
+        result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");
+        // Null constants have a special "null pointer" type - for now, use void*
+        type = new Type(TYPE_VOID, 1); // void* type
+        if (debug)
+        {
+            cout << "[AST] Null constant" << endl;
+        }
+        break;
+    }
+
     case PRIM_PAREN_EXPR:
     {
         // Generate code for inner expression
@@ -289,13 +328,27 @@ void BinaryExpression::generate_tac()
         falselist = merge(left->falselist, right->falselist);
         truelist = right->truelist;
 
-        // No result operand for boolean control flow
-        result = nullptr;
-        type = new Type(TYPE_INT);
+        // For assignment contexts, create a result operand and compute the logical AND
+        TACOperand temp = tacGen.newTemp();
+        result = new TACOperand(temp);
+        type = new Type(TYPE_BOOL);
+        
+        // Generate TAC for logical AND: temp = left_result && right_result  
+        // This will emit the actual logical AND operation
+        tacGen.emit(TAC_LOGICAL_AND, *result, *left->result, *right->result);
+        code.push_back(tacGen.getCode().back());
 
-        // Type checking
+        // Type checking - logical operators accept numeric types or pointers (C semantics)
         if (!left->type || !right->type || left->type->is_error() || right->type->is_error())
         {
+            type = new Type(TYPE_ERROR);
+        }
+        else if (!(left->type->is_numeric() || left->type->is_pointer() || left->type->base_type == TYPE_BOOL) || 
+                 !(right->type->is_numeric() || right->type->is_pointer() || right->type->base_type == TYPE_BOOL))
+        {
+            fprintf(stderr, "[Type Error] Line %d: Logical operator '&&' requires numeric, pointer, or bool operands, got %s and %s\n",
+                    line_no, left->type->to_string().c_str(), right->type->to_string().c_str());
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
         }
         return;
@@ -322,13 +375,27 @@ void BinaryExpression::generate_tac()
         truelist = merge(left->truelist, right->truelist);
         falselist = right->falselist;
 
-        // No result operand for boolean control flow
-        result = nullptr;
-        type = new Type(TYPE_INT);
+        // For assignment contexts, create a result operand and compute the logical OR
+        TACOperand temp = tacGen.newTemp();
+        result = new TACOperand(temp);
+        type = new Type(TYPE_BOOL);
+        
+        // Generate TAC for logical OR: temp = left_result || right_result
+        // This will emit the actual logical OR operation  
+        tacGen.emit(TAC_LOGICAL_OR, *result, *left->result, *right->result);
+        code.push_back(tacGen.getCode().back());
 
-        // Type checking
+        // Type checking - logical operators accept numeric types or pointers (C semantics)
         if (!left->type || !right->type || left->type->is_error() || right->type->is_error())
         {
+            type = new Type(TYPE_ERROR);
+        }
+        else if (!(left->type->is_numeric() || left->type->is_pointer() || left->type->base_type == TYPE_BOOL) || 
+                 !(right->type->is_numeric() || right->type->is_pointer() || right->type->base_type == TYPE_BOOL))
+        {
+            fprintf(stderr, "[Type Error] Line %d: Logical operator '||' requires numeric, pointer, or bool operands, got %s and %s\n",
+                    line_no, left->type->to_string().c_str(), right->type->to_string().c_str());
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
         }
         return;
@@ -350,7 +417,9 @@ void BinaryExpression::generate_tac()
     {
         fprintf(stderr, "[Type Error] Line %d: Missing type information in binary expression\n",
                 line_no);
+        semantic_error_count++;
         type = new Type(TYPE_ERROR);
+        result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
         return;
     }
 
@@ -358,6 +427,7 @@ void BinaryExpression::generate_tac()
     if (left->type->is_error() || right->type->is_error())
     {
         type = new Type(TYPE_ERROR);
+        result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
         return;
     }
 
@@ -471,7 +541,9 @@ void BinaryExpression::generate_tac()
         {
             fprintf(stderr, "[Type Error] Line %d: Modulo operator '%%' requires integer operands, got %s and %s\n",
                     line_no, left->type->to_string().c_str(), right->type->to_string().c_str());
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
             return;
         }
     }
@@ -483,30 +555,66 @@ void BinaryExpression::generate_tac()
         {
             fprintf(stderr, "[Type Error] Line %d: Bitwise operator '%s' requires integer operands, got %s and %s\n",
                     line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
             return;
         }
     }
-    // Comparison operators require numeric operands
-    else if (op == TAC_LT || op == TAC_GT || op == TAC_LE || op == TAC_GE ||
-             op == TAC_EQ || op == TAC_NE)
+    // Ordering operators (<, >, <=, >=) require numeric operands only
+    else if (op == TAC_LT || op == TAC_GT || op == TAC_LE || op == TAC_GE)
     {
         if (!left->type->is_numeric() || !right->type->is_numeric())
         {
-            fprintf(stderr, "[Type Error] Line %d: Comparison operator '%s' requires numeric operands, got %s and %s\n",
+            fprintf(stderr, "[Type Error] Line %d: Ordering operator '%s' requires numeric operands, got %s and %s\n",
                     line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
             return;
         }
     }
-    // Logical operators require numeric operands (C semantics: any numeric is "truthy")
+    // Equality operators (==, !=) allow both numeric and pointer comparisons
+    else if (op == TAC_EQ || op == TAC_NE)
+    {
+        bool valid = false;
+        
+        // Case 1: Both operands are numeric
+        if (left->type->is_numeric() && right->type->is_numeric())
+        {
+            valid = true;
+        }
+        // Case 2: Both operands are pointers of compatible types
+        else if (left->type->is_pointer() && right->type->is_pointer())
+        {
+            // For now, allow any pointer-to-pointer comparison
+            // TODO: Add stricter type compatibility checking
+            valid = true;
+        }
+        // Case 3: One is a null constant and the other is a pointer
+        // TODO: Implement null constant detection
+        
+        if (!valid)
+        {
+            fprintf(stderr, "[Type Error] Line %d: Equality operator '%s' requires compatible types, got %s and %s\n",
+                    line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
+            semantic_error_count++;
+            type = new Type(TYPE_ERROR);
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
+            return;
+        }
+    }
+    // Logical operators accept numeric types, pointers, or bool (C semantics: any scalar type is "truthy")
     else if (op == TAC_LOGICAL_AND || op == TAC_LOGICAL_OR)
     {
-        if (!left->type->is_numeric() || !right->type->is_numeric())
+        if (!(left->type->is_numeric() || left->type->is_pointer() || left->type->base_type == TYPE_BOOL) || 
+            !(right->type->is_numeric() || right->type->is_pointer() || right->type->base_type == TYPE_BOOL))
         {
-            fprintf(stderr, "[Type Error] Line %d: Logical operator '%s' requires numeric operands, got %s and %s\n",
+            fprintf(stderr, "[Type Error] Line %d: Logical operator '%s' requires numeric, pointer, or bool operands, got %s and %s\n",
                     line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
             return;
         }
     }
@@ -517,7 +625,9 @@ void BinaryExpression::generate_tac()
         {
             fprintf(stderr, "[Type Error] Line %d: Operator '%s' requires numeric operands, got %s and %s\n",
                     line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
             return;
         }
     }
@@ -525,14 +635,17 @@ void BinaryExpression::generate_tac()
     // Determine result type using promotion rules
     // Phase 1: For bitwise/comparison/logical ops, result is int; for arithmetic, use type promotion
     if (op == TAC_BITWISE_AND || op == TAC_BITWISE_OR || op == TAC_BITWISE_XOR ||
-        op == TAC_LEFT_SHIFT || op == TAC_RIGHT_SHIFT || op == TAC_MOD ||
-        op == TAC_LT || op == TAC_GT || op == TAC_LE || op == TAC_GE ||
-        op == TAC_EQ || op == TAC_NE ||
-        op == TAC_LOGICAL_AND || op == TAC_LOGICAL_OR)
+        op == TAC_LEFT_SHIFT || op == TAC_RIGHT_SHIFT || op == TAC_MOD)
     {
-        // Bitwise, comparison, and logical operations result in int
-        // Comparison/logical return 1 (true) or 0 (false) as standard C behavior
+        // Bitwise operations result in int
         type = new Type(TYPE_INT);
+    }
+    else if (op == TAC_LT || op == TAC_GT || op == TAC_LE || op == TAC_GE ||
+             op == TAC_EQ || op == TAC_NE ||
+             op == TAC_LOGICAL_AND || op == TAC_LOGICAL_OR)
+    {
+        // Comparison and logical operations return bool
+        type = new Type(TYPE_BOOL);
     }
     else
     {
@@ -556,23 +669,19 @@ void BinaryExpression::generate_tac()
 
     if (is_relational)
     {
-        // For relational expressions, generate comparison + conditional jumps
-        // E.truelist and E.falselist for backpatching
-
+        // For relational expressions, generate simple comparison result
+        // Backpatching with truelist/falselist is only needed in control flow contexts
+        
         // Create new temporary for the comparison result
         TACOperand temp = tacGen.newTemp();
         result = new TACOperand(temp);
 
-        // Emit the comparison operation
+        // Emit the comparison operation (simple assignment)
         tacGen.emit(op, *result, *left->result, *right->result);
         code.push_back(tacGen.getCode().back());
-
-        // Generate "if temp goto ___" (truelist) and "goto ___" (falselist)
-        int true_jump = tacGen.emit(TAC_IF_GOTO, TACOperand(), *result);
-        int false_jump = tacGen.emit(TAC_GOTO, TACOperand(), TACOperand());
-
-        truelist = makelist(true_jump);
-        falselist = makelist(false_jump);
+        
+        // Note: truelist/falselist remain empty for simple assignment contexts
+        // They will be populated by control flow structures if needed
     }
     else
     {
@@ -668,7 +777,9 @@ void BinaryExpression::handle_pointer_minus_pointer(Expression *left_ptr, Expres
     {
         fprintf(stderr, "[Type Error] Line %d: Incompatible pointer types in subtraction: %s - %s\n",
                 line_no, left_ptr->type->to_string().c_str(), right_ptr->type->to_string().c_str());
+        semantic_error_count++;
         type = new Type(TYPE_ERROR);
+        result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
         return;
     }
 
@@ -760,6 +871,7 @@ void UnaryExpression::generate_tac()
     {
         fprintf(stderr, "[Type Error] Line %d: Missing type information in unary expression\n",
                 line_no);
+        semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
     }
@@ -839,6 +951,7 @@ void UnaryExpression::generate_tac()
         {
             fprintf(stderr, "[Type Error] Line %d: Cannot dereference non-pointer type %s\n",
                     line_no, expr->type->to_string().c_str());
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
         }
@@ -880,6 +993,7 @@ void UnaryExpression::generate_tac()
             const char *op_name = (op == TAC_UMINUS) ? "-" : "+";
             fprintf(stderr, "[Type Error] Line %d: Unary '%s' requires numeric operand, got %s\n",
                     line_no, op_name, expr->type->to_string().c_str());
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
         }
@@ -891,17 +1005,19 @@ void UnaryExpression::generate_tac()
         {
             fprintf(stderr, "[Type Error] Line %d: Bitwise NOT '~' requires integer operand, got %s\n",
                     line_no, expr->type->to_string().c_str());
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
         }
     }
-    // Logical NOT requires numeric operand (C semantics: any numeric is "truthy")
+    // Logical NOT requires numeric, pointer, or bool operand (C semantics: any scalar type is "truthy")
     else if (op == TAC_LOGICAL_NOT)
     {
-        if (!expr->type->is_numeric())
+        if (!expr->type->is_numeric() && !expr->type->is_pointer() && expr->type->base_type != TYPE_BOOL)
         {
-            fprintf(stderr, "[Type Error] Line %d: Logical NOT '!' requires numeric operand, got %s\n",
+            fprintf(stderr, "[Type Error] Line %d: Logical NOT '!' requires numeric, pointer, or bool operand, got %s\n",
                     line_no, expr->type->to_string().c_str());
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
         }
@@ -915,6 +1031,7 @@ void UnaryExpression::generate_tac()
         {
             fprintf(stderr, "[Type Error] Line %d: Prefix '%s' requires numeric or pointer operand, got %s\n",
                     line_no, op_name, expr->type->to_string().c_str());
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
         }
@@ -925,17 +1042,22 @@ void UnaryExpression::generate_tac()
         {
             fprintf(stderr, "[Type Error] Line %d: Prefix '%s' requires an lvalue (modifiable variable)\n",
                     line_no, op_name);
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
         }
     }
 
-    // Result type: bitwise NOT and logical NOT return int; others keep operand type
-    if (op == TAC_BITWISE_NOT || op == TAC_LOGICAL_NOT)
+    // Result type: bitwise NOT and logical NOT have different return types
+    if (op == TAC_BITWISE_NOT)
     {
-        // Bitwise NOT promotes char to int
-        // Logical NOT returns int (1 for false, 0 for true in C)
+        // Bitwise NOT promotes char to int but otherwise keeps the type
         type = new Type(TYPE_INT);
+    }
+    else if (op == TAC_LOGICAL_NOT)
+    {
+        // Logical NOT returns bool (true/false)
+        type = new Type(TYPE_BOOL);
     }
     else
     {
@@ -1030,6 +1152,7 @@ void PostfixExpression::generate_tac()
                 line_no,
                 (op == TAC_POST_INC ? "++" : "--"),
                 expr->type->to_string().c_str());
+        semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
     }
@@ -1109,6 +1232,7 @@ void AssignmentExpression::generate_tac()
     {
         fprintf(stderr, "[Type Error] Line %d: Missing type information in assignment\n",
                 line_no);
+        semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
     }
@@ -1150,6 +1274,13 @@ void AssignmentExpression::generate_tac()
     {
         compatible = true;
         // Array automatically decays to pointer to first element
+    }
+    // Null constant check: null can be assigned to any pointer type
+    else if (sym->type.pointer_level > 0 && 
+             rhs->type->base_type == TYPE_VOID && rhs->type->pointer_level == 1)
+    {
+        // Allow null constants to be assigned to any pointer type
+        compatible = true;
     }
     // Third check: numeric type conversions (only for non-pointer types)
     else if (sym->type.pointer_level == 0 && rhs->type->pointer_level == 0 &&
@@ -1264,6 +1395,18 @@ PrimaryExpression *create_paren_expression(Expression *expr)
     return new PrimaryExpression(expr);
 }
 
+PrimaryExpression *create_bool_constant_expression(bool value)
+{
+    // Create a boolean constant (true/false)
+    return new PrimaryExpression(value);
+}
+
+PrimaryExpression *create_null_constant_expression()
+{
+    // Create a null pointer constant  
+    return new PrimaryExpression(); // Uses the special null constructor
+}
+
 BinaryExpression *create_binary_expression(Expression *left, TACOp op, Expression *right)
 {
     return new BinaryExpression(left, op, right);
@@ -1313,6 +1456,7 @@ void GeneralAssignmentExpression::generate_tac()
     if (!lhs->type || !rhs->type)
     {
         fprintf(stderr, "[Type Error] Line %d: Missing type information in assignment\n", line_no);
+        semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
     }
@@ -1389,6 +1533,7 @@ void GeneralAssignmentExpression::generate_tac()
     {
         // Other complex lvalues not yet supported
         fprintf(stderr, "[Error] Line %d: Complex assignment LHS type not yet supported\n", line_no);
+        semantic_error_count++;
         type = new Type(TYPE_ERROR);
     }
 }
@@ -1432,6 +1577,7 @@ void ArrayAccessExpression::generate_tac()
     if (!array->type || !index->type)
     {
         fprintf(stderr, "[Type Error] Line %d: Missing type information in array access\n", line_no);
+        semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
     }
@@ -1467,6 +1613,7 @@ void ArrayAccessExpression::generate_tac()
     if (!index->type->is_integer())
     {
         fprintf(stderr, "[Type Error] Line %d: Array subscript must be an integer type\n", line_no);
+        semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
     }
@@ -1530,6 +1677,69 @@ void ArrayAccessExpression::generate_tac()
 ArrayAccessExpression *create_array_access_expression(Expression *array, Expression *index)
 {
     return new ArrayAccessExpression(array, index);
+}
+
+// ============================================================================
+// ARRAY INITIALIZER EXPRESSIONS
+// ============================================================================
+
+ArrayInitializerExpression::ArrayInitializerExpression(const std::vector<Expression *> &init_list)
+    : initializers(init_list)
+{
+}
+
+ArrayInitializerExpression::~ArrayInitializerExpression()
+{
+    for (Expression *expr : initializers)
+    {
+        delete expr;
+    }
+}
+
+std::string ArrayInitializerExpression::to_string() const
+{
+    std::string result = "{";
+    for (size_t i = 0; i < initializers.size(); i++)
+    {
+        if (i > 0) result += ", ";
+        result += initializers[i]->to_string();
+    }
+    result += "}";
+    return result;
+}
+
+void ArrayInitializerExpression::generate_tac()
+{
+    // For array initializers, we don't generate a single result operand
+    // Instead, we will be used during variable declaration to generate
+    // individual assignments for each array element
+    
+    // Generate TAC for all initializer expressions
+    for (Expression *expr : initializers)
+    {
+        // For nested array initializers, don't generate TAC yet - 
+        // just mark them as having a placeholder type
+        ArrayInitializerExpression *nested = dynamic_cast<ArrayInitializerExpression*>(expr);
+        if (nested)
+        {
+            // This is a nested initializer - give it a placeholder type
+            nested->type = new Type(TYPE_INT); // placeholder
+        }
+        else
+        {
+            expr->generate_tac();
+            code.insert(code.end(), expr->code.begin(), expr->code.end());
+        }
+    }
+    
+    // The type will be determined by the declaration context
+    // For now, we don't set a result operand since array initializers
+    // are handled specially in variable declarations
+}
+
+ArrayInitializerExpression *create_array_initializer_expression(const std::vector<Expression *> &init_list)
+{
+    return new ArrayInitializerExpression(init_list);
 }
 
 // ============================================================================

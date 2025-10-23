@@ -64,6 +64,9 @@ public:
  *   * Checks type compatibility (warns for implicit conversions)
  *   * Emits TAC_ASSIGN to initialize the variable
  */
+// Forward declaration for ArrayInitializerExpression
+class ArrayInitializerExpression;
+
 class VariableDeclaration : public Declaration
 {
 public:
@@ -78,6 +81,9 @@ public:
     std::string to_string() const override;
     void insert_symbol() override;
     void generate_tac() override;
+
+private:
+    void handle_array_initialization(ArrayInitializerExpression *array_init);
 };
 
 // ============================================================================

@@ -70,6 +70,8 @@ public:
         PRIM_CHAR_CONSTANT,  // Character literal (e.g., 'a', '\n')
         PRIM_FLOAT_CONSTANT, // Float/double literal (e.g., 3.14)
         PRIM_STRING_LITERAL, // String literal (e.g., "hello")
+        PRIM_BOOL_CONSTANT,  // Boolean literal (true/false)
+        PRIM_NULL_CONSTANT,  // Null pointer constant (null/nullptr)
         PRIM_PAREN_EXPR      // Parenthesized expression (e.g., (x + 1))
     };
 
@@ -79,6 +81,7 @@ public:
     char char_value;          // For PRIM_CHAR_CONSTANT
     double float_value;       // For PRIM_FLOAT_CONSTANT (stores both float and double)
     std::string string_value; // For PRIM_STRING_LITERAL
+    bool bool_value;          // For PRIM_BOOL_CONSTANT
     Expression *expr;         // For PRIM_PAREN_EXPR
     Symbol *symbol_ref;       // For PRIM_IDENTIFIER - cached symbol lookup result
 
@@ -88,6 +91,8 @@ public:
     PrimaryExpression(char value);                                     // Char constant
     PrimaryExpression(double value);                                   // Float/double constant
     PrimaryExpression(const std::string &str, bool is_string_literal); // String literal
+    PrimaryExpression(bool value);                                     // Bool constant
+    PrimaryExpression();                                               // Null constant (special constructor)
     PrimaryExpression(Expression *e);                                  // Parenthesized
     virtual ~PrimaryExpression();
 
@@ -253,6 +258,22 @@ public:
     void generate_tac() override;
 };
 
+/**
+ * Array Initializer Expression - {expr1, expr2, ...}
+ * Handles array initialization lists like {1, 2, 3, 4, 5}
+ */
+class ArrayInitializerExpression : public Expression
+{
+public:
+    std::vector<Expression *> initializers; // List of initializer expressions
+
+    ArrayInitializerExpression(const std::vector<Expression *> &init_list);
+    virtual ~ArrayInitializerExpression();
+
+    std::string to_string() const override;
+    void generate_tac() override;
+};
+
 // ============================================================================
 // Function Call Expression - f(arg1, arg2, ...)
 // ============================================================================
@@ -299,6 +320,10 @@ PrimaryExpression *create_primary_expression(double value, int line, int col);
 // Create parenthesized expression
 PrimaryExpression *create_paren_expression(Expression *expr);
 
+// Create special constants
+PrimaryExpression *create_bool_constant_expression(bool value);
+PrimaryExpression *create_null_constant_expression();
+
 // Create other expressions
 BinaryExpression *create_binary_expression(Expression *left, TACOp op, Expression *right);
 UnaryExpression *create_unary_expression(TACOp op, Expression *expr);
@@ -306,5 +331,6 @@ PostfixExpression *create_postfix_expression(TACOp op, Expression *expr);
 AssignmentExpression *create_assignment_expression(const std::string &var, Expression *rhs);
 GeneralAssignmentExpression *create_general_assignment_expression(Expression *lhs, Expression *rhs);
 ArrayAccessExpression *create_array_access_expression(Expression *array, Expression *index);
+ArrayInitializerExpression *create_array_initializer_expression(const std::vector<Expression *> &init_list);
 
 #endif // EXPRESSION_H

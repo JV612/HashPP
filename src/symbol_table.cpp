@@ -106,6 +106,9 @@ string Type::to_string() const
     case TYPE_CHAR:
         result += "char";
         break;
+    case TYPE_BOOL:
+        result += "bool";
+        break;
     case TYPE_VOID:
         result += "void";
         break;
@@ -151,6 +154,8 @@ int Type::get_size() const
         return 4;
     case TYPE_CHAR:
         return 1;
+    case TYPE_BOOL:
+        return 1; // Bools are stored as single bytes
     case TYPE_ENUM:
         return 4; // Enums are stored as integers
     case TYPE_VOID:
@@ -543,6 +548,7 @@ Symbol *insert_function_static_symbol(const std::string &varName, Type type, int
     if (!current_function_signature)
     {
         cerr << "[Error] Cannot insert static variable '" << varName << "' - no current function" << endl;
+        semantic_error_count++;
         return nullptr;
     }
     

@@ -592,6 +592,7 @@ void BreakStatement::generate_tac()
     if (loop_depth == 0)
     {
         fprintf(stderr, "[Error] Line %d: 'break' statement not within loop or switch\n", line_no);
+        semantic_error_count++;
         return;
     }
 
@@ -628,6 +629,7 @@ void ContinueStatement::generate_tac()
     if (loop_depth == 0)
     {
         fprintf(stderr, "[Error] Line %d: 'continue' statement not within loop\n", line_no);
+        semantic_error_count++;
         return;
     }
 
@@ -837,6 +839,7 @@ void CaseLabel::generate_tac()
     {
         fprintf(stderr, "[Type Error] Line %d: Case label must be an integer or character constant\n",
                 line_no);
+        semantic_error_count++;
     }
 
     // Generate code for the statement following the case label
@@ -964,6 +967,7 @@ void SwitchStatement::generate_tac()
     {
         fprintf(stderr, "[Type Error] Line %d: Switch expression must be an integer type\n",
                 line_no);
+        semantic_error_count++;
         return;
     }
 

@@ -122,6 +122,7 @@ VariableDeclaration* create_variable_declaration(Type* var_type, const char* var
 %type <expr> constant
 
 %type <expr> initializer
+%type <expr_list> initializer_list
 %type <expr> constant_expression
 %type <expr_list> argument_expression_list
 
@@ -195,9 +196,21 @@ constant
             $$ = create_primary_expression($1, @1.first_line, @1.first_column);
         }
     | BOOL_TRUE
+        { 
+            $$ = create_bool_constant_expression(true);
+        }
     | BOOL_FALSE
+        { 
+            $$ = create_bool_constant_expression(false);
+        }
     | NULL_CONSTANT
+        { 
+            $$ = create_null_constant_expression();
+        }
     | NULLPTR_CONSTANT
+        { 
+            $$ = create_null_constant_expression();
+        }
     ;
 
 
@@ -623,8 +636,8 @@ type_specifier
           $$ = new Type(TYPE_INT);
       }
     | BOOL { 
-          current_type = Type(TYPE_INT);
-          $$ = new Type(TYPE_INT);
+          current_type = Type(TYPE_BOOL);
+          $$ = new Type(TYPE_BOOL);
       }
     | DOUBLE { 
           current_type = Type(TYPE_FLOAT);
@@ -1029,12 +1042,22 @@ initializer
 	: assignment_expression
         { $$ = $1; }
 	| '{' initializer_list '}'
+        { $$ = create_array_initializer_expression(*$2); delete $2; }
 	| '{' initializer_list ',' '}'
+        { $$ = create_array_initializer_expression(*$2); delete $2; }
 	;
 
 initializer_list
 	: initializer
+        { 
+            $$ = new std::vector<Expression*>(); 
+            $$->push_back($1); 
+        }
 	| initializer_list ',' initializer
+        { 
+            $1->push_back($3); 
+            $$ = $1; 
+        }
 	;
 
 statement
