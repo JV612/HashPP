@@ -301,6 +301,59 @@ public:
 CallExpression *create_call_expression(const std::string &name, const std::vector<Expression *> &args);
 
 // ============================================================================
+// Member Access Expressions - struct.member and ptr->member
+// ============================================================================
+
+/**
+ * Member Access Expression - struct.member
+ *
+ * Represents: struct_var.member_name
+ * Example: node.value
+ *
+ * generate_tac():
+ * - Lookup struct type and get member offset
+ * - Generate address arithmetic: base_addr + offset
+ * - Load value from computed address
+ */
+class MemberAccessExpression : public Expression
+{
+public:
+    Expression *struct_expr; // The struct variable expression
+    std::string member_name; // The member being accessed
+
+    MemberAccessExpression(Expression *s_expr, const std::string &member);
+    virtual ~MemberAccessExpression();
+
+    std::string to_string() const override;
+    void generate_tac() override;
+};
+
+/**
+ * Member Access Pointer Expression - ptr->member
+ *
+ * Represents: ptr->member_name (equivalent to (*ptr).member_name)
+ * Example: node->next
+ *
+ * generate_tac():
+ * - Dereference pointer to get struct
+ * - Lookup struct type and get member offset
+ * - Generate address arithmetic: base_addr + offset
+ * - Load value from computed address
+ */
+class MemberAccessPtrExpression : public Expression
+{
+public:
+    Expression *ptr_expr;    // The pointer to struct expression
+    std::string member_name; // The member being accessed
+
+    MemberAccessPtrExpression(Expression *p_expr, const std::string &member);
+    virtual ~MemberAccessPtrExpression();
+
+    std::string to_string() const override;
+    void generate_tac() override;
+};
+
+// ============================================================================
 // Helper Functions - Expression Node Creation
 // ============================================================================
 
@@ -332,5 +385,7 @@ AssignmentExpression *create_assignment_expression(const std::string &var, Expre
 GeneralAssignmentExpression *create_general_assignment_expression(Expression *lhs, Expression *rhs);
 ArrayAccessExpression *create_array_access_expression(Expression *array, Expression *index);
 ArrayInitializerExpression *create_array_initializer_expression(const std::vector<Expression *> &init_list);
+MemberAccessExpression *create_member_access_expression(Expression *struct_expr, const std::string &member);
+MemberAccessPtrExpression *create_member_access_ptr_expression(Expression *ptr_expr, const std::string &member);
 
 #endif // EXPRESSION_H

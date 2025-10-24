@@ -85,6 +85,138 @@ int get_enum_member_value(const std::string &identifier)
 }
 
 // ============================================================================
+// Struct Type Implementation
+// ============================================================================
+
+StructType *current_struct = nullptr;
+
+void StructType::add_member(const std::string &member_name, Type *member_type)
+{
+    // Check for duplicate member names
+    if (has_member(member_name))
+    {
+        fprintf(stderr, "[Semantic Error] Duplicate member '%s' in struct '%s'\n",
+                member_name.c_str(), name.c_str());
+        semantic_error_count++;
+        delete member_type; // Clean up the duplicate type
+        return;
+    }
+    members.push_back(std::make_pair(member_name, member_type));
+}
+
+int StructType::get_member_offset(const std::string &member_name) const
+{
+    auto it = member_offsets.find(member_name);
+    if (it != member_offsets.end())
+    {
+        return it->second;
+    }
+    return 0; // Should not happen if used correctly
+}
+
+Type *StructType::get_member_type(const std::string &member_name) const
+{
+    for (const auto &member : members)
+    {
+        if (member.first == member_name)
+        {
+            return member.second;
+        }
+    }
+    return nullptr; // Should not happen if used correctly
+}
+
+bool StructType::has_member(const std::string &member_name) const
+{
+    for (const auto &member : members)
+    {
+        if (member.first == member_name)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void StructType::finalize()
+{
+    // Calculate offsets and total size
+    int current_offset = 0;
+    for (auto &member : members)
+    {
+        member_offsets[member.first] = current_offset;
+        int member_size = member.second->get_total_size();
+        current_offset += member_size;
+    }
+    total_size = current_offset;
+}
+
+// ============================================================================
+// Scope-aware Struct Management Functions
+// ============================================================================
+
+void register_struct_in_scope(const std::string &struct_name, StructType *struct_type)
+{
+    SymbolTable *scope = current_scope();
+    if (!scope)
+    {
+        // At global level, use global symbol table
+        scope = globalSymbolTable;
+        if (debug)
+            printf("[Struct Registry] Registering '%s' in global scope\n", struct_name.c_str());
+    }
+    else
+    {
+        if (debug)
+            printf("[Struct Registry] Registering '%s' in scope %d\n", struct_name.c_str(), scope->Scopelevel);
+    }
+    if (scope)
+    {
+        scope->register_struct(struct_name, struct_type);
+    }
+}
+
+StructType *lookup_struct_in_scope(const std::string &struct_name)
+{
+    // Start from current scope and walk up to parent scopes
+    SymbolTable *scope = current_scope();
+    if (!scope)
+    {
+        // At global level, start with global symbol table
+        scope = globalSymbolTable;
+    }
+
+    while (scope)
+    {
+        StructType *st = scope->lookup_struct_local(struct_name);
+        if (st)
+        {
+            return st;
+        }
+        scope = scope->Parent;
+    }
+
+    return nullptr;
+}
+
+bool struct_exists_in_current_scope(const std::string &struct_name)
+{
+    SymbolTable *scope = current_scope();
+    if (scope)
+    {
+        return scope->lookup_struct_local(struct_name) != nullptr;
+    }
+
+    // Check global scope if no current scope
+    if (globalSymbolTable)
+    {
+        return globalSymbolTable->lookup_struct_local(struct_name) != nullptr;
+    }
+
+    return false;
+}
+
+// ============================================================================
 // Type Implementation
 // ============================================================================
 
@@ -95,29 +227,36 @@ string Type::to_string() const
     if (is_const)
         result = "const ";
 
-    switch (base_type)
+    if (is_struct)
     {
-    case TYPE_INT:
-        result += "int";
-        break;
-    case TYPE_FLOAT:
-        result += "float";
-        break;
-    case TYPE_CHAR:
-        result += "char";
-        break;
-    case TYPE_BOOL:
-        result += "bool";
-        break;
-    case TYPE_VOID:
-        result += "void";
-        break;
-    case TYPE_ENUM:
-        result += "enum";
-        break;
-    case TYPE_ERROR:
-        result += "error";
-        break;
+        result += "struct " + struct_name;
+    }
+    else
+    {
+        switch (base_type)
+        {
+        case TYPE_INT:
+            result += "int";
+            break;
+        case TYPE_FLOAT:
+            result += "float";
+            break;
+        case TYPE_CHAR:
+            result += "char";
+            break;
+        case TYPE_BOOL:
+            result += "bool";
+            break;
+        case TYPE_VOID:
+            result += "void";
+            break;
+        case TYPE_ENUM:
+            result += "enum";
+            break;
+        case TYPE_ERROR:
+            result += "error";
+            break;
+        }
     }
 
     for (int i = 0; i < pointer_level; i++)
@@ -145,6 +284,22 @@ int Type::get_size() const
     // Pointers are 8 bytes (64-bit)
     if (pointer_level > 0)
         return 8;
+
+    // Struct types - prefer using direct pointer if available
+    if (is_struct)
+    {
+        StructType *st = struct_type_ptr;
+        if (!st)
+        {
+            // Fallback to scope-based lookup
+            st = lookup_struct_in_scope(struct_name);
+        }
+        if (st)
+        {
+            return st->total_size;
+        }
+        return 0; // Error case - struct not found
+    }
 
     switch (base_type)
     {
@@ -271,6 +426,10 @@ bool Type::is_integer() const
  */
 bool Type::is_error() const
 {
+    // Struct types have base_type==TYPE_ERROR but are not actual errors
+    // if is_struct is true
+    if (is_struct)
+        return false;
     return base_type == TYPE_ERROR;
 }
 
@@ -321,6 +480,33 @@ SymbolTable::~SymbolTable()
             delete sym;
         }
     }
+
+    // Clean up all structs in this scope
+    for (auto &pair : struct_types)
+    {
+        delete pair.second;
+    }
+}
+
+bool SymbolTable::register_struct(const std::string &name, StructType *st)
+{
+    // Check if struct already exists in THIS scope
+    if (struct_types.find(name) != struct_types.end())
+    {
+        return false; // Already exists
+    }
+    struct_types[name] = st;
+    return true;
+}
+
+StructType *SymbolTable::lookup_struct_local(const std::string &name)
+{
+    auto it = struct_types.find(name);
+    if (it != struct_types.end())
+    {
+        return it->second;
+    }
+    return nullptr;
 }
 
 Symbol *SymbolTable::insert(const string &name, Type type)
@@ -400,6 +586,11 @@ SymbolTable *current_scope()
 SymbolTable *push_scope(const std::string &functionName)
 {
     SymbolTable *parent = current_scope();
+    if (!parent)
+    {
+        // If stack is empty, use global symbol table as parent
+        parent = globalSymbolTable;
+    }
     SymbolTable *child = new SymbolTable();
     child->Parent = parent;
     child->Scopelevel = ++next_scope_id; // unique scope id
@@ -408,7 +599,7 @@ SymbolTable *push_scope(const std::string &functionName)
     if (debug)
     {
         cout << "[Scope] Entered new scope " << child->Scopelevel
-             << (parent ? string(" (parent ") + to_string(parent->Scopelevel) + ")" : " (global)")
+             << (parent ? string(" (parent ") + to_string(parent->Scopelevel) + ")" : " (no parent)")
              << endl;
     }
     return child;
@@ -436,7 +627,7 @@ Symbol *lookup_symbol(const std::string &name)
         if (s)
             return s;
     }
-    
+
     // Second, check function static variables if we're in a function
     if (current_function_signature)
     {
@@ -446,7 +637,7 @@ Symbol *lookup_symbol(const std::string &name)
         if (s)
             return s;
     }
-    
+
     // Third, check global symbol table
     if (globalSymbolTable)
     {
@@ -454,7 +645,7 @@ Symbol *lookup_symbol(const std::string &name)
         if (s)
             return s;
     }
-    
+
     return nullptr;
 }
 
@@ -516,7 +707,7 @@ Symbol *insert_global_symbol(const std::string &name, Type type)
 {
     if (!globalSymbolTable)
         init_global_symbol_table();
-    
+
     Symbol *sym = globalSymbolTable->insert(name, type);
     if (sym)
     {
@@ -551,7 +742,7 @@ Symbol *insert_function_static_symbol(const std::string &varName, Type type, int
         semantic_error_count++;
         return nullptr;
     }
-    
+
     // Initialize static table for this function if not exists
     if (!current_function_signature->static_table)
     {
@@ -563,21 +754,21 @@ Symbol *insert_function_static_symbol(const std::string &varName, Type type, int
         if (debug)
             cout << "[Static] Created static table for function: " << current_function_signature->name << endl;
     }
-    
+
     // Create unique name with scope level to handle nested scopes
     string uniqueName = varName + "_scope" + to_string(scopeLevel);
-    
+
     // Check for redeclaration in the same scope
     Symbol *existing = current_function_signature->static_table->lookup(uniqueName);
     if (existing)
     {
-        cerr << "[Semantic Error] Redeclaration of static variable '" << varName 
-             << "' in scope " << scopeLevel << " of function '" 
+        cerr << "[Semantic Error] Redeclaration of static variable '" << varName
+             << "' in scope " << scopeLevel << " of function '"
              << current_function_signature->name << "'" << endl;
         semantic_error_count++;
         return nullptr;
     }
-    
+
     // Insert the static variable
     Symbol *sym = current_function_signature->static_table->insert(uniqueName, type);
     if (sym)
@@ -588,8 +779,8 @@ Symbol *insert_function_static_symbol(const std::string &varName, Type type, int
         // Store original name for lookup purposes
         sym->name = varName; // Keep original name for lookup purposes
         if (debug)
-            cout << "[Static] Inserted function static: " << varName 
-                 << " (unique: " << uniqueName << ") in " << current_function_signature->name 
+            cout << "[Static] Inserted function static: " << varName
+                 << " (unique: " << uniqueName << ") in " << current_function_signature->name
                  << " scope " << scopeLevel << endl;
     }
     return sym;
@@ -599,13 +790,13 @@ Symbol *lookup_function_static_symbol(const std::string &varName, int scopeLevel
 {
     if (!current_function_signature || !current_function_signature->static_table)
         return nullptr;
-    
+
     // Try to find with scope-specific name first
     string uniqueName = varName + "_scope" + to_string(scopeLevel);
     Symbol *sym = current_function_signature->static_table->lookup(uniqueName);
     if (sym)
         return sym;
-    
+
     // If not found with current scope, try broader search through all scopes
     // (for when variable is declared in outer scope but accessed in inner scope)
     for (int scope = scopeLevel; scope >= 0; scope--)
@@ -615,7 +806,7 @@ Symbol *lookup_function_static_symbol(const std::string &varName, int scopeLevel
         if (sym)
             return sym;
     }
-    
+
     return nullptr;
 }
 

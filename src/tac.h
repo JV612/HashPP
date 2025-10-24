@@ -57,6 +57,9 @@ enum TACOp
     TAC_DEREF,       // x = *y (dereference/load)
     TAC_DEREF_STORE, // *x = y (store through pointer)
 
+    // Struct/Member Operations
+    TAC_MEMBER_ACCESS, // x = &struct + offset (address of member)
+
     // Bitwise Operations (Phase 1)
     TAC_BITWISE_AND, // x = y & z
     TAC_BITWISE_OR,  // x = y | z
@@ -145,15 +148,15 @@ public:
     // Get all generated code
     const std::vector<TACInstruction *> &getCode() const { return code; }
     std::vector<TACInstruction *> &getCode() { return code; }
-    
+
     // Label patchlists : label name -> list of instruction indices to backpatch
     std::unordered_map<std::string, std::vector<int>> label_patchlists;
 
-    // Label positions : 
+    // Label positions :
     std::unordered_map<std::string, int> label_positions;
 
-    void emit_label(const std::string& label_name, int instr_index);
-    void emit_goto(const std::string& label_name, int instr_index);
+    void emit_label(const std::string &label_name, int instr_index);
+    void emit_goto(const std::string &label_name, int instr_index);
     void finalize_labels();
 
     // Print TAC

@@ -112,7 +112,7 @@ string PrimaryExpression::to_string() const
     case PRIM_FLOAT_CONSTANT:
         return std::to_string(float_value);
     case PRIM_STRING_LITERAL:
-        return "\"" + string_value + "\"";
+        return string_value;
     case PRIM_BOOL_CONSTANT:
         return bool_value ? "true" : "false";
     case PRIM_NULL_CONSTANT:
@@ -213,7 +213,7 @@ void PrimaryExpression::generate_tac()
         result = new TACOperand(TACOperand::OPERAND_STRING, string_value);
         // String literals have type "pointer to char" (char*)
         type = new Type(TYPE_CHAR, 1); // base_type = char, pointer_level = 1
-        cout << "[AST] String literal: \"" << string_value << "\"" << endl;
+        cout << "[AST] String literal: " << string_value << endl;
         break;
     }
 
@@ -332,8 +332,8 @@ void BinaryExpression::generate_tac()
         TACOperand temp = tacGen.newTemp();
         result = new TACOperand(temp);
         type = new Type(TYPE_BOOL);
-        
-        // Generate TAC for logical AND: temp = left_result && right_result  
+
+        // Generate TAC for logical AND: temp = left_result && right_result
         // This will emit the actual logical AND operation
         tacGen.emit(TAC_LOGICAL_AND, *result, *left->result, *right->result);
         code.push_back(tacGen.getCode().back());
@@ -343,7 +343,7 @@ void BinaryExpression::generate_tac()
         {
             type = new Type(TYPE_ERROR);
         }
-        else if (!(left->type->is_numeric() || left->type->is_pointer() || left->type->base_type == TYPE_BOOL) || 
+        else if (!(left->type->is_numeric() || left->type->is_pointer() || left->type->base_type == TYPE_BOOL) ||
                  !(right->type->is_numeric() || right->type->is_pointer() || right->type->base_type == TYPE_BOOL))
         {
             fprintf(stderr, "[Type Error] Line %d: Logical operator '&&' requires numeric, pointer, or bool operands, got %s and %s\n",
@@ -379,9 +379,9 @@ void BinaryExpression::generate_tac()
         TACOperand temp = tacGen.newTemp();
         result = new TACOperand(temp);
         type = new Type(TYPE_BOOL);
-        
+
         // Generate TAC for logical OR: temp = left_result || right_result
-        // This will emit the actual logical OR operation  
+        // This will emit the actual logical OR operation
         tacGen.emit(TAC_LOGICAL_OR, *result, *left->result, *right->result);
         code.push_back(tacGen.getCode().back());
 
@@ -390,7 +390,7 @@ void BinaryExpression::generate_tac()
         {
             type = new Type(TYPE_ERROR);
         }
-        else if (!(left->type->is_numeric() || left->type->is_pointer() || left->type->base_type == TYPE_BOOL) || 
+        else if (!(left->type->is_numeric() || left->type->is_pointer() || left->type->base_type == TYPE_BOOL) ||
                  !(right->type->is_numeric() || right->type->is_pointer() || right->type->base_type == TYPE_BOOL))
         {
             fprintf(stderr, "[Type Error] Line %d: Logical operator '||' requires numeric, pointer, or bool operands, got %s and %s\n",
@@ -419,7 +419,7 @@ void BinaryExpression::generate_tac()
                 line_no);
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
-        result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
+        result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
         return;
     }
 
@@ -427,40 +427,41 @@ void BinaryExpression::generate_tac()
     if (left->type->is_error() || right->type->is_error())
     {
         type = new Type(TYPE_ERROR);
-        result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
+        result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
         return;
     }
 
     // ========================================================================
     // POINTER ARITHMETIC HANDLING
+    // Arrays decay to pointers in arithmetic contexts
     // ========================================================================
-    bool left_is_pointer = left->type->is_pointer();
-    bool right_is_pointer = right->type->is_pointer();
+    bool left_is_pointer = left->type->is_pointer() || left->type->is_array;
+    bool right_is_pointer = right->type->is_pointer() || right->type->is_array;
     bool left_is_integer = left->type->is_integer();
     bool right_is_integer = right->type->is_integer();
 
-    // Handle pointer + integer
+    // Handle pointer + integer (or array + integer)
     if (op == TAC_ADD && left_is_pointer && right_is_integer)
     {
         handle_pointer_plus_integer(left, right);
         return;
     }
 
-    // Handle integer + pointer
+    // Handle integer + pointer (or integer + array)
     if (op == TAC_ADD && left_is_integer && right_is_pointer)
     {
         handle_pointer_plus_integer(right, left);
         return;
     }
 
-    // Handle pointer - integer
+    // Handle pointer - integer (or array - integer)
     if (op == TAC_SUB && left_is_pointer && right_is_integer)
     {
         handle_pointer_minus_integer(left, right);
         return;
     }
 
-    // Handle pointer - pointer
+    // Handle pointer - pointer (or array - pointer, or array - array)
     if (op == TAC_SUB && left_is_pointer && right_is_pointer)
     {
         handle_pointer_minus_pointer(left, right);
@@ -543,7 +544,7 @@ void BinaryExpression::generate_tac()
                     line_no, left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
-            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
             return;
         }
     }
@@ -557,7 +558,7 @@ void BinaryExpression::generate_tac()
                     line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
-            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
             return;
         }
     }
@@ -570,7 +571,7 @@ void BinaryExpression::generate_tac()
                     line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
-            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
             return;
         }
     }
@@ -578,7 +579,7 @@ void BinaryExpression::generate_tac()
     else if (op == TAC_EQ || op == TAC_NE)
     {
         bool valid = false;
-        
+
         // Case 1: Both operands are numeric
         if (left->type->is_numeric() && right->type->is_numeric())
         {
@@ -593,28 +594,28 @@ void BinaryExpression::generate_tac()
         }
         // Case 3: One is a null constant and the other is a pointer
         // TODO: Implement null constant detection
-        
+
         if (!valid)
         {
             fprintf(stderr, "[Type Error] Line %d: Equality operator '%s' requires compatible types, got %s and %s\n",
                     line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
-            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
             return;
         }
     }
     // Logical operators accept numeric types, pointers, or bool (C semantics: any scalar type is "truthy")
     else if (op == TAC_LOGICAL_AND || op == TAC_LOGICAL_OR)
     {
-        if (!(left->type->is_numeric() || left->type->is_pointer() || left->type->base_type == TYPE_BOOL) || 
+        if (!(left->type->is_numeric() || left->type->is_pointer() || left->type->base_type == TYPE_BOOL) ||
             !(right->type->is_numeric() || right->type->is_pointer() || right->type->base_type == TYPE_BOOL))
         {
             fprintf(stderr, "[Type Error] Line %d: Logical operator '%s' requires numeric, pointer, or bool operands, got %s and %s\n",
                     line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
-            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
             return;
         }
     }
@@ -627,7 +628,7 @@ void BinaryExpression::generate_tac()
                     line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
-            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
             return;
         }
     }
@@ -671,7 +672,7 @@ void BinaryExpression::generate_tac()
     {
         // For relational expressions, generate simple comparison result
         // Backpatching with truelist/falselist is only needed in control flow contexts
-        
+
         // Create new temporary for the comparison result
         TACOperand temp = tacGen.newTemp();
         result = new TACOperand(temp);
@@ -679,7 +680,7 @@ void BinaryExpression::generate_tac()
         // Emit the comparison operation (simple assignment)
         tacGen.emit(op, *result, *left->result, *right->result);
         code.push_back(tacGen.getCode().back());
-        
+
         // Note: truelist/falselist remain empty for simple assignment contexts
         // They will be populated by control flow structures if needed
     }
@@ -718,6 +719,20 @@ void BinaryExpression::handle_pointer_plus_integer(Expression *ptr_expr, Express
     code.insert(code.end(), ptr_expr->code.begin(), ptr_expr->code.end());
     code.insert(code.end(), int_expr->code.begin(), int_expr->code.end());
 
+    // For arrays, we need to get the base address first (array decays to pointer)
+    TACOperand ptr_operand;
+    if (ptr_expr->type->is_array)
+    {
+        // Array needs address-of to decay to pointer
+        ptr_operand = tacGen.newTemp();
+        tacGen.emit(TAC_ADDR_OF, ptr_operand, *ptr_expr->result);
+        code.push_back(tacGen.getCode().back());
+    }
+    else
+    {
+        ptr_operand = *ptr_expr->result;
+    }
+
     // Step 1: Scale the integer by element size
     // _t1 = integer * elem_size
     TACOperand scale_temp = tacGen.newTemp();
@@ -728,12 +743,43 @@ void BinaryExpression::handle_pointer_plus_integer(Expression *ptr_expr, Express
     // Step 2: Add scaled offset to pointer
     // result = pointer + _t1
     TACOperand result_temp = tacGen.newTemp();
-    tacGen.emit(TAC_ADD, result_temp, *ptr_expr->result, scale_temp);
+    tacGen.emit(TAC_ADD, result_temp, ptr_operand, scale_temp);
     code.push_back(tacGen.getCode().back());
 
-    // Result is same pointer type as input
+    // Result type: decay array to pointer
     result = new TACOperand(result_temp);
-    type = new Type(*ptr_expr->type);
+    if (ptr_expr->type->is_array)
+    {
+        // Array decay removes the outermost dimension
+        // int arr[5] + 1 -> int* (pointer to int)
+        // int arr[3][4] + 1 -> int (*)[4] (pointer to array of 4 ints)
+        // int arr[2][3][4] + 1 -> int (*)[3][4] (pointer to array of [3][4] ints)
+        type = new Type(*ptr_expr->type);
+        type->pointer_level = 1;
+
+        if (ptr_expr->type->array_dim > 1)
+        {
+            // Multi-dimensional: remove first dimension, keep rest as array
+            type->is_array = true;
+            type->array_dim = ptr_expr->type->array_dim - 1;
+            // Remove the first size from array_sizes
+            type->array_sizes = std::vector<int>(
+                ptr_expr->type->array_sizes.begin() + 1,
+                ptr_expr->type->array_sizes.end());
+        }
+        else
+        {
+            // Single dimension: becomes simple pointer
+            type->is_array = false;
+            type->array_dim = 0;
+            type->array_sizes.clear();
+        }
+    }
+    else
+    {
+        // Pointer type stays the same
+        type = new Type(*ptr_expr->type);
+    }
 
     if (debug)
         printf("[AST] Pointer arithmetic: pointer + integer (scaled by %d)\n", elem_size);
@@ -748,6 +794,20 @@ void BinaryExpression::handle_pointer_minus_integer(Expression *ptr_expr, Expres
     code.insert(code.end(), ptr_expr->code.begin(), ptr_expr->code.end());
     code.insert(code.end(), int_expr->code.begin(), int_expr->code.end());
 
+    // For arrays, we need to get the base address first (array decays to pointer)
+    TACOperand ptr_operand;
+    if (ptr_expr->type->is_array)
+    {
+        // Array needs address-of to decay to pointer
+        ptr_operand = tacGen.newTemp();
+        tacGen.emit(TAC_ADDR_OF, ptr_operand, *ptr_expr->result);
+        code.push_back(tacGen.getCode().back());
+    }
+    else
+    {
+        ptr_operand = *ptr_expr->result;
+    }
+
     // Step 1: Scale the integer by element size
     // _t1 = integer * elem_size
     TACOperand scale_temp = tacGen.newTemp();
@@ -758,12 +818,42 @@ void BinaryExpression::handle_pointer_minus_integer(Expression *ptr_expr, Expres
     // Step 2: Subtract scaled offset from pointer
     // result = pointer - _t1
     TACOperand result_temp = tacGen.newTemp();
-    tacGen.emit(TAC_SUB, result_temp, *ptr_expr->result, scale_temp);
+    tacGen.emit(TAC_SUB, result_temp, ptr_operand, scale_temp);
     code.push_back(tacGen.getCode().back());
 
-    // Result is same pointer type as input
+    // Result type: decay array to pointer
     result = new TACOperand(result_temp);
-    type = new Type(*ptr_expr->type);
+    if (ptr_expr->type->is_array)
+    {
+        // Array decay removes the outermost dimension
+        // int arr[5] - 1 -> int* (pointer to int)
+        // int arr[3][4] - 1 -> int (*)[4] (pointer to array of 4 ints)
+        type = new Type(*ptr_expr->type);
+        type->pointer_level = 1;
+
+        if (ptr_expr->type->array_dim > 1)
+        {
+            // Multi-dimensional: remove first dimension, keep rest as array
+            type->is_array = true;
+            type->array_dim = ptr_expr->type->array_dim - 1;
+            // Remove the first size from array_sizes
+            type->array_sizes = std::vector<int>(
+                ptr_expr->type->array_sizes.begin() + 1,
+                ptr_expr->type->array_sizes.end());
+        }
+        else
+        {
+            // Single dimension: becomes simple pointer
+            type->is_array = false;
+            type->array_dim = 0;
+            type->array_sizes.clear();
+        }
+    }
+    else
+    {
+        // Pointer type stays the same
+        type = new Type(*ptr_expr->type);
+    }
 
     if (debug)
         printf("[AST] Pointer arithmetic: pointer - integer (scaled by %d)\n", elem_size);
@@ -771,15 +861,35 @@ void BinaryExpression::handle_pointer_minus_integer(Expression *ptr_expr, Expres
 
 void BinaryExpression::handle_pointer_minus_pointer(Expression *left_ptr, Expression *right_ptr)
 {
+    // For type checking, treat arrays as decayed pointers
+    Type left_type_decayed = *left_ptr->type;
+    Type right_type_decayed = *right_ptr->type;
+
+    if (left_ptr->type->is_array)
+    {
+        left_type_decayed.is_array = false;
+        left_type_decayed.pointer_level = 1;
+        left_type_decayed.array_dim = 0;
+        left_type_decayed.array_sizes.clear();
+    }
+
+    if (right_ptr->type->is_array)
+    {
+        right_type_decayed.is_array = false;
+        right_type_decayed.pointer_level = 1;
+        right_type_decayed.array_dim = 0;
+        right_type_decayed.array_sizes.clear();
+    }
+
     // Type check: must be compatible pointer types
-    if (left_ptr->type->base_type != right_ptr->type->base_type ||
-        left_ptr->type->pointer_level != right_ptr->type->pointer_level)
+    if (left_type_decayed.base_type != right_type_decayed.base_type ||
+        left_type_decayed.pointer_level != right_type_decayed.pointer_level)
     {
         fprintf(stderr, "[Type Error] Line %d: Incompatible pointer types in subtraction: %s - %s\n",
                 line_no, left_ptr->type->to_string().c_str(), right_ptr->type->to_string().c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
-        result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");  // Dummy result to prevent segfault
+        result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
         return;
     }
 
@@ -789,10 +899,35 @@ void BinaryExpression::handle_pointer_minus_pointer(Expression *left_ptr, Expres
     code.insert(code.end(), left_ptr->code.begin(), left_ptr->code.end());
     code.insert(code.end(), right_ptr->code.begin(), right_ptr->code.end());
 
+    // Get pointer addresses (handle array decay)
+    TACOperand left_operand;
+    if (left_ptr->type->is_array)
+    {
+        left_operand = tacGen.newTemp();
+        tacGen.emit(TAC_ADDR_OF, left_operand, *left_ptr->result);
+        code.push_back(tacGen.getCode().back());
+    }
+    else
+    {
+        left_operand = *left_ptr->result;
+    }
+
+    TACOperand right_operand;
+    if (right_ptr->type->is_array)
+    {
+        right_operand = tacGen.newTemp();
+        tacGen.emit(TAC_ADDR_OF, right_operand, *right_ptr->result);
+        code.push_back(tacGen.getCode().back());
+    }
+    else
+    {
+        right_operand = *right_ptr->result;
+    }
+
     // Step 1: Byte-level subtraction
     // _t1 = left_ptr - right_ptr
     TACOperand diff_temp = tacGen.newTemp();
-    tacGen.emit(TAC_SUB, diff_temp, *left_ptr->result, *right_ptr->result);
+    tacGen.emit(TAC_SUB, diff_temp, left_operand, right_operand);
     code.push_back(tacGen.getCode().back());
 
     // Step 2: Unscale by element size to get number of elements
@@ -919,6 +1054,33 @@ void UnaryExpression::generate_tac()
             return;
         }
 
+        // Check if operand is a member access expression (struct.member or ptr->member)
+        MemberAccessExpression *member_expr = dynamic_cast<MemberAccessExpression *>(expr);
+        MemberAccessPtrExpression *ptr_member_expr = dynamic_cast<MemberAccessPtrExpression *>(expr);
+
+        if (member_expr || ptr_member_expr)
+        {
+            // For member access, we already computed the address in the second-to-last instruction
+            // We just need to return that address instead of the loaded value
+            code = expr->code;
+
+            if (code.size() >= 2)
+            {
+                // Get the address from the second-to-last instruction (before the dereference)
+                TACInstruction *addr_instr = code[code.size() - 2];
+                result = new TACOperand(addr_instr->result);
+
+                // Remove the last instruction (the dereference) since we want the address
+                code.pop_back();
+
+                // Result type: pointer to member type
+                type = new Type(*expr->type);
+                type->pointer_level++;
+
+                return;
+            }
+        }
+
         // Check that operand is an lvalue (can take address)
         if (!expr->result || expr->result->type != TACOperand::OPERAND_IDENTIFIER)
         {
@@ -958,7 +1120,15 @@ void UnaryExpression::generate_tac()
 
         // Result type: decrease pointer level or reduce array dimension
         type = new Type(*expr->type);
-        if (type->is_array)
+
+        // For pointer to array (e.g., int (*)[4]), decrease pointer level
+        // The result is still an array type
+        if (type->pointer_level > 0)
+        {
+            type->pointer_level--;
+        }
+        // For pure arrays (not pointers to arrays), decrease array dimension
+        else if (type->is_array)
         {
             type->array_dim--;
             if (!type->array_sizes.empty())
@@ -969,10 +1139,6 @@ void UnaryExpression::generate_tac()
             {
                 type->is_array = false;
             }
-        }
-        else if (type->pointer_level > 0)
-        {
-            type->pointer_level--;
         }
 
         // TAC Generation
@@ -1263,7 +1429,20 @@ void AssignmentExpression::generate_tac()
         sym->type.pointer_level == rhs->type->pointer_level &&
         sym->type.is_array == rhs->type->is_array)
     {
-        compatible = true;
+        // For struct types, also check that struct names match
+        if (sym->type.is_struct && rhs->type->is_struct)
+        {
+            if (sym->type.struct_name == rhs->type->struct_name)
+            {
+                compatible = true;
+            }
+        }
+        else if (!sym->type.is_struct && !rhs->type->is_struct)
+        {
+            // Non-struct types match
+            compatible = true;
+        }
+        // else: one is struct, one is not -> incompatible
     }
     // Second check: array-to-pointer decay
     // An array T[] can be assigned to a pointer T*
@@ -1276,7 +1455,7 @@ void AssignmentExpression::generate_tac()
         // Array automatically decays to pointer to first element
     }
     // Null constant check: null can be assigned to any pointer type
-    else if (sym->type.pointer_level > 0 && 
+    else if (sym->type.pointer_level > 0 &&
              rhs->type->base_type == TYPE_VOID && rhs->type->pointer_level == 1)
     {
         // Allow null constants to be assigned to any pointer type
@@ -1403,7 +1582,7 @@ PrimaryExpression *create_bool_constant_expression(bool value)
 
 PrimaryExpression *create_null_constant_expression()
 {
-    // Create a null pointer constant  
+    // Create a null pointer constant
     return new PrimaryExpression(); // Uses the special null constructor
 }
 
@@ -1476,10 +1655,57 @@ void GeneralAssignmentExpression::generate_tac()
         // We need to use TAC_DEREF_STORE
 
         // Type compatibility check
-        if (lhs->type->base_type != rhs->type->base_type)
+        bool compatible = false;
+
+        // Check for exact type match
+        if (lhs->type->base_type == rhs->type->base_type &&
+            lhs->type->pointer_level == rhs->type->pointer_level &&
+            lhs->type->is_array == rhs->type->is_array)
         {
-            fprintf(stderr, "[Type Warning] Line %d: Assignment between incompatible types (%s = %s)\n",
-                    line_no, lhs->type->to_string().c_str(), rhs->type->to_string().c_str());
+            // For struct types, also check struct names match
+            if (lhs->type->is_struct && rhs->type->is_struct)
+            {
+                if (lhs->type->struct_name == rhs->type->struct_name)
+                {
+                    compatible = true;
+                }
+            }
+            else if (!lhs->type->is_struct && !rhs->type->is_struct)
+            {
+                compatible = true;
+            }
+        }
+        // Array-to-pointer decay
+        else if (rhs->type->is_array &&
+                 lhs->type->pointer_level == 1 &&
+                 !lhs->type->is_array &&
+                 lhs->type->base_type == rhs->type->base_type)
+        {
+            compatible = true;
+        }
+        // Null constant to pointer
+        else if (lhs->type->pointer_level > 0 &&
+                 rhs->type->base_type == TYPE_VOID && rhs->type->pointer_level == 1)
+        {
+            compatible = true;
+        }
+        // Numeric conversions (only for non-pointer types)
+        else if (lhs->type->pointer_level == 0 && rhs->type->pointer_level == 0 &&
+                 !lhs->type->is_array && !rhs->type->is_array &&
+                 lhs->type->is_numeric() && rhs->type->is_numeric())
+        {
+            compatible = true;
+            fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in assignment from %s to %s\n",
+                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+        }
+
+        if (!compatible)
+        {
+            fprintf(stderr, "[Type Error] Line %d: Cannot assign %s to %s\n",
+                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+            semantic_error_count++;
+            type = new Type(TYPE_ERROR);
+            return;
         }
 
         // Generate: *ptr = rhs_value
@@ -1500,10 +1726,57 @@ void GeneralAssignmentExpression::generate_tac()
         // We need to extract the address (before the final dereference)
 
         // Type compatibility check
-        if (lhs->type->base_type != rhs->type->base_type)
+        bool compatible = false;
+
+        // Check for exact type match
+        if (lhs->type->base_type == rhs->type->base_type &&
+            lhs->type->pointer_level == rhs->type->pointer_level &&
+            lhs->type->is_array == rhs->type->is_array)
         {
-            fprintf(stderr, "[Type Warning] Line %d: Assignment between incompatible types (%s = %s)\n",
-                    line_no, lhs->type->to_string().c_str(), rhs->type->to_string().c_str());
+            // For struct types, also check struct names match
+            if (lhs->type->is_struct && rhs->type->is_struct)
+            {
+                if (lhs->type->struct_name == rhs->type->struct_name)
+                {
+                    compatible = true;
+                }
+            }
+            else if (!lhs->type->is_struct && !rhs->type->is_struct)
+            {
+                compatible = true;
+            }
+        }
+        // Array-to-pointer decay
+        else if (rhs->type->is_array &&
+                 lhs->type->pointer_level == 1 &&
+                 !lhs->type->is_array &&
+                 lhs->type->base_type == rhs->type->base_type)
+        {
+            compatible = true;
+        }
+        // Null constant to pointer
+        else if (lhs->type->pointer_level > 0 &&
+                 rhs->type->base_type == TYPE_VOID && rhs->type->pointer_level == 1)
+        {
+            compatible = true;
+        }
+        // Numeric conversions (only for non-pointer types)
+        else if (lhs->type->pointer_level == 0 && rhs->type->pointer_level == 0 &&
+                 !lhs->type->is_array && !rhs->type->is_array &&
+                 lhs->type->is_numeric() && rhs->type->is_numeric())
+        {
+            compatible = true;
+            fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in assignment from %s to %s\n",
+                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+        }
+
+        if (!compatible)
+        {
+            fprintf(stderr, "[Type Error] Line %d: Cannot assign %s to %s\n",
+                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+            semantic_error_count++;
+            type = new Type(TYPE_ERROR);
+            return;
         }
 
         // The ArrayAccessExpression generated:
@@ -1528,6 +1801,174 @@ void GeneralAssignmentExpression::generate_tac()
         // Result type is the LHS type
         type = new Type(*lhs->type);
         result = new TACOperand(*rhs->result); // Result is the assigned value
+    }
+    // Check if LHS is a member access (struct.member = val)
+    else if (MemberAccessExpression *member_lhs = dynamic_cast<MemberAccessExpression *>(lhs))
+    {
+        // Store to struct member: struct.member = value
+        // The MemberAccessExpression calculated:
+        // t1 = &struct
+        // t2 = t1 + offset
+        // t3 = *t2 (the loaded value)
+        // We need t2 (the address) for storing
+
+        // Type compatibility check
+        bool compatible = false;
+
+        // Check for exact type match
+        if (lhs->type->base_type == rhs->type->base_type &&
+            lhs->type->pointer_level == rhs->type->pointer_level &&
+            lhs->type->is_array == rhs->type->is_array)
+        {
+            // For struct types, also check struct names match
+            if (lhs->type->is_struct && rhs->type->is_struct)
+            {
+                if (lhs->type->struct_name == rhs->type->struct_name)
+                {
+                    compatible = true;
+                }
+            }
+            else if (!lhs->type->is_struct && !rhs->type->is_struct)
+            {
+                compatible = true;
+            }
+        }
+        // Array-to-pointer decay
+        else if (rhs->type->is_array &&
+                 lhs->type->pointer_level == 1 &&
+                 !lhs->type->is_array &&
+                 lhs->type->base_type == rhs->type->base_type)
+        {
+            compatible = true;
+        }
+        // Null constant to pointer
+        else if (lhs->type->pointer_level > 0 &&
+                 rhs->type->base_type == TYPE_VOID && rhs->type->pointer_level == 1)
+        {
+            compatible = true;
+        }
+        // Numeric conversions (only for non-pointer types)
+        else if (lhs->type->pointer_level == 0 && rhs->type->pointer_level == 0 &&
+                 !lhs->type->is_array && !rhs->type->is_array &&
+                 lhs->type->is_numeric() && rhs->type->is_numeric())
+        {
+            compatible = true;
+            fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in assignment from %s to %s\n",
+                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+        }
+
+        if (!compatible)
+        {
+            fprintf(stderr, "[Type Error] Line %d: Cannot assign %s to %s\n",
+                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+            semantic_error_count++;
+            type = new Type(TYPE_ERROR);
+            return;
+        }
+
+        // Get the address from the second-to-last instruction
+        if (member_lhs->code.size() >= 2)
+        {
+            TACInstruction *addr_instr = member_lhs->code[member_lhs->code.size() - 2];
+            TACOperand addr = addr_instr->result;
+
+            // Check if RHS result is valid
+            if (!rhs->result)
+            {
+                fprintf(stderr, "[Error] Line %d: RHS result is null in member assignment\n", line_no);
+                semantic_error_count++;
+            }
+            else
+            {
+                // Generate: *addr = rhs_value
+                tacGen.emit(TAC_DEREF_STORE, addr, *rhs->result);
+                code.push_back(tacGen.getCode().back());
+            }
+        }
+        else
+        {
+            fprintf(stderr, "[Error] Line %d: Member LHS code size too small: %zu\n", line_no, member_lhs->code.size());
+            semantic_error_count++;
+        }
+
+        // Result type is the LHS type
+        type = new Type(*lhs->type);
+        result = new TACOperand(*rhs->result);
+    }
+    // Check if LHS is a pointer member access (ptr->member = val)
+    else if (MemberAccessPtrExpression *ptr_member_lhs = dynamic_cast<MemberAccessPtrExpression *>(lhs))
+    {
+        // Store to struct member via pointer: ptr->member = value
+        // Similar to member access, we need the address before the final dereference
+
+        // Type compatibility check
+        bool compatible = false;
+
+        // Check for exact type match
+        if (lhs->type->base_type == rhs->type->base_type &&
+            lhs->type->pointer_level == rhs->type->pointer_level &&
+            lhs->type->is_array == rhs->type->is_array)
+        {
+            // For struct types, also check struct names match
+            if (lhs->type->is_struct && rhs->type->is_struct)
+            {
+                if (lhs->type->struct_name == rhs->type->struct_name)
+                {
+                    compatible = true;
+                }
+            }
+            else if (!lhs->type->is_struct && !rhs->type->is_struct)
+            {
+                compatible = true;
+            }
+        }
+        // Array-to-pointer decay
+        else if (rhs->type->is_array &&
+                 lhs->type->pointer_level == 1 &&
+                 !lhs->type->is_array &&
+                 lhs->type->base_type == rhs->type->base_type)
+        {
+            compatible = true;
+        }
+        // Null constant to pointer
+        else if (lhs->type->pointer_level > 0 &&
+                 rhs->type->base_type == TYPE_VOID && rhs->type->pointer_level == 1)
+        {
+            compatible = true;
+        }
+        // Numeric conversions (only for non-pointer types)
+        else if (lhs->type->pointer_level == 0 && rhs->type->pointer_level == 0 &&
+                 !lhs->type->is_array && !rhs->type->is_array &&
+                 lhs->type->is_numeric() && rhs->type->is_numeric())
+        {
+            compatible = true;
+            fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in assignment from %s to %s\n",
+                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+        }
+
+        if (!compatible)
+        {
+            fprintf(stderr, "[Type Error] Line %d: Cannot assign %s to %s\n",
+                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+            semantic_error_count++;
+            type = new Type(TYPE_ERROR);
+            return;
+        }
+
+        // Get the address from the second-to-last instruction
+        if (ptr_member_lhs->code.size() >= 2)
+        {
+            TACInstruction *addr_instr = ptr_member_lhs->code[ptr_member_lhs->code.size() - 2];
+            TACOperand addr = addr_instr->result;
+
+            // Generate: *addr = rhs_value
+            tacGen.emit(TAC_DEREF_STORE, addr, *rhs->result);
+            code.push_back(tacGen.getCode().back());
+        }
+
+        // Result type is the LHS type
+        type = new Type(*lhs->type);
+        result = new TACOperand(*rhs->result);
     }
     else
     {
@@ -1701,7 +2142,8 @@ std::string ArrayInitializerExpression::to_string() const
     std::string result = "{";
     for (size_t i = 0; i < initializers.size(); i++)
     {
-        if (i > 0) result += ", ";
+        if (i > 0)
+            result += ", ";
         result += initializers[i]->to_string();
     }
     result += "}";
@@ -1713,13 +2155,13 @@ void ArrayInitializerExpression::generate_tac()
     // For array initializers, we don't generate a single result operand
     // Instead, we will be used during variable declaration to generate
     // individual assignments for each array element
-    
+
     // Generate TAC for all initializer expressions
     for (Expression *expr : initializers)
     {
-        // For nested array initializers, don't generate TAC yet - 
+        // For nested array initializers, don't generate TAC yet -
         // just mark them as having a placeholder type
-        ArrayInitializerExpression *nested = dynamic_cast<ArrayInitializerExpression*>(expr);
+        ArrayInitializerExpression *nested = dynamic_cast<ArrayInitializerExpression *>(expr);
         if (nested)
         {
             // This is a nested initializer - give it a placeholder type
@@ -1731,7 +2173,7 @@ void ArrayInitializerExpression::generate_tac()
             code.insert(code.end(), expr->code.begin(), expr->code.end());
         }
     }
-    
+
     // The type will be determined by the declaration context
     // For now, we don't set a result operand since array initializers
     // are handled specially in variable declarations
@@ -1815,4 +2257,204 @@ CallExpression *create_call_expression(const std::string &name, const std::vecto
 PostfixExpression *create_postfix_expression(TACOp op, Expression *expr)
 {
     return new PostfixExpression(op, expr);
+}
+
+// ============================================================================
+// MEMBER ACCESS EXPRESSIONS - struct.member and ptr->member
+// ============================================================================
+
+MemberAccessExpression::MemberAccessExpression(Expression *s_expr, const std::string &member)
+    : struct_expr(s_expr), member_name(member)
+{
+}
+
+MemberAccessExpression::~MemberAccessExpression()
+{
+    delete struct_expr;
+}
+
+std::string MemberAccessExpression::to_string() const
+{
+    return struct_expr->to_string() + "." + member_name;
+}
+
+void MemberAccessExpression::generate_tac()
+{
+    code.clear();
+
+    // Generate code for the struct expression
+    struct_expr->generate_tac();
+    code.insert(code.end(), struct_expr->code.begin(), struct_expr->code.end());
+
+    // Check if the expression is a struct type
+    if (!struct_expr->type || (!struct_expr->type->is_struct && struct_expr->type->pointer_level == 0))
+    {
+        fprintf(stderr, "[Type Error] Line %d: Member access requires a struct type, got '%s'\n",
+                line_no, struct_expr->type ? struct_expr->type->to_string().c_str() : "unknown");
+        semantic_error_count++;
+        type = new Type(TYPE_ERROR);
+        result = new TACOperand();
+        return;
+    }
+
+    // Lookup struct type - prefer using the direct pointer if available
+    StructType *st = struct_expr->type->struct_type_ptr;
+    if (!st)
+    {
+        // Fallback to scope-based lookup (for backwards compatibility)
+        st = lookup_struct_in_scope(struct_expr->type->struct_name);
+    }
+    if (!st)
+    {
+        fprintf(stderr, "[Type Error] Line %d: Struct type '%s' not found\n",
+                line_no, struct_expr->type->struct_name.c_str());
+        semantic_error_count++;
+        type = new Type(TYPE_ERROR);
+        result = new TACOperand();
+        return;
+    }
+
+    // Check if member exists
+    if (!st->has_member(member_name))
+    {
+        fprintf(stderr, "[Type Error] Line %d: Struct '%s' has no member named '%s'\n",
+                line_no, st->name.c_str(), member_name.c_str());
+        semantic_error_count++;
+        type = new Type(TYPE_ERROR);
+        result = new TACOperand();
+        return;
+    }
+
+    // Get member offset and type
+    int offset = st->get_member_offset(member_name);
+    Type *member_type = st->get_member_type(member_name);
+
+    // Generate TAC: compute address of member
+    // For struct variable: base_addr + offset
+    TACOperand offset_op(TACOperand::OPERAND_CONSTANT, std::to_string(offset));
+    TACOperand addr_temp = tacGen.newTemp();
+
+    // If struct_expr is a simple identifier, use address-of
+    PrimaryExpression *prim = dynamic_cast<PrimaryExpression *>(struct_expr);
+    if (prim && prim->prim_type == PrimaryExpression::PRIM_IDENTIFIER)
+    {
+        TACOperand struct_addr = tacGen.newTemp();
+        tacGen.emit(TAC_ADDR_OF, struct_addr, *struct_expr->result);
+        code.push_back(tacGen.getCode().back());
+
+        tacGen.emit(TAC_ADD, addr_temp, struct_addr, offset_op);
+        code.push_back(tacGen.getCode().back());
+    }
+    else
+    {
+        // For complex expressions, assume result is already an address
+        tacGen.emit(TAC_ADD, addr_temp, *struct_expr->result, offset_op);
+        code.push_back(tacGen.getCode().back());
+    }
+
+    // Load value from member address
+    result = new TACOperand(tacGen.newTemp());
+    tacGen.emit(TAC_DEREF, *result, addr_temp);
+    code.push_back(tacGen.getCode().back());
+
+    // Set type to member type
+    type = new Type(*member_type);
+}
+
+MemberAccessPtrExpression::MemberAccessPtrExpression(Expression *p_expr, const std::string &member)
+    : ptr_expr(p_expr), member_name(member)
+{
+}
+
+MemberAccessPtrExpression::~MemberAccessPtrExpression()
+{
+    delete ptr_expr;
+}
+
+std::string MemberAccessPtrExpression::to_string() const
+{
+    return ptr_expr->to_string() + "->" + member_name;
+}
+
+void MemberAccessPtrExpression::generate_tac()
+{
+    code.clear();
+
+    // Generate code for the pointer expression
+    ptr_expr->generate_tac();
+    code.insert(code.end(), ptr_expr->code.begin(), ptr_expr->code.end());
+
+    // Check if the expression is a pointer to struct
+    if (!ptr_expr->type || !ptr_expr->type->is_struct || ptr_expr->type->pointer_level == 0)
+    {
+        fprintf(stderr, "[Type Error] Line %d: Pointer member access requires a pointer to struct, got '%s'\n",
+                line_no, ptr_expr->type ? ptr_expr->type->to_string().c_str() : "unknown");
+        semantic_error_count++;
+        type = new Type(TYPE_ERROR);
+        result = new TACOperand();
+        return;
+    }
+
+    // Lookup struct type - prefer using the direct pointer if available
+    StructType *st = ptr_expr->type->struct_type_ptr;
+    if (!st)
+    {
+        // Fallback to scope-based lookup (for backwards compatibility)
+        st = lookup_struct_in_scope(ptr_expr->type->struct_name);
+    }
+    if (!st)
+    {
+        fprintf(stderr, "[Type Error] Line %d: Struct type '%s' not found\n",
+                line_no, ptr_expr->type->struct_name.c_str());
+        semantic_error_count++;
+        type = new Type(TYPE_ERROR);
+        result = new TACOperand();
+        return;
+    }
+
+    // Check if member exists
+    if (!st->has_member(member_name))
+    {
+        fprintf(stderr, "[Type Error] Line %d: Struct '%s' has no member named '%s'\n",
+                line_no, st->name.c_str(), member_name.c_str());
+        semantic_error_count++;
+        type = new Type(TYPE_ERROR);
+        result = new TACOperand();
+        return;
+    }
+
+    // Get member offset and type
+    int offset = st->get_member_offset(member_name);
+    Type *member_type = st->get_member_type(member_name);
+
+    // Generate TAC: dereference pointer, then compute member address
+    // ptr->member is equivalent to (*ptr).member
+    TACOperand struct_addr = tacGen.newTemp();
+    tacGen.emit(TAC_DEREF, struct_addr, *ptr_expr->result);
+    code.push_back(tacGen.getCode().back());
+
+    // Add offset to get member address
+    TACOperand offset_op(TACOperand::OPERAND_CONSTANT, std::to_string(offset));
+    TACOperand member_addr = tacGen.newTemp();
+    tacGen.emit(TAC_ADD, member_addr, struct_addr, offset_op);
+    code.push_back(tacGen.getCode().back());
+
+    // Load value from member address
+    result = new TACOperand(tacGen.newTemp());
+    tacGen.emit(TAC_DEREF, *result, member_addr);
+    code.push_back(tacGen.getCode().back());
+
+    // Set type to member type
+    type = new Type(*member_type);
+}
+
+// Helper functions for creating member access expressions
+MemberAccessExpression *create_member_access_expression(Expression *struct_expr, const std::string &member)
+{
+    return new MemberAccessExpression(struct_expr, member);
+}
+
+MemberAccessPtrExpression *create_member_access_ptr_expression(Expression *ptr_expr, const std::string &member)
+{
+    return new MemberAccessPtrExpression(ptr_expr, member);
 }

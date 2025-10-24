@@ -34,6 +34,9 @@ bool current_is_static = false;
 // Track current enum being parsed
 EnumType* current_enum = nullptr;
 
+// Track current struct being parsed (declared in symbol_table.h)
+// extern StructType* current_struct;
+
 // List to hold declarators from comma-separated lists that need deferred TAC generation
 std::vector<Declaration*> pending_declarator_tac;
 
@@ -243,8 +246,14 @@ postfix_expression
                 $$ = $1; // fallback
             }
         }
-	| postfix_expression '.' IDENTIFIER
-	| postfix_expression PTR_OP IDENTIFIER
+	| postfix_expression '.' IDENTIFIER {
+          $$ = create_member_access_expression($1, $3);
+          free($3);
+      }
+	| postfix_expression PTR_OP IDENTIFIER {
+          $$ = create_member_access_ptr_expression($1, $3);
+          free($3);
+      }
 	| postfix_expression INC_OP
         {
             $$ = create_postfix_expression(TAC_POST_INC, $1);
@@ -411,30 +420,61 @@ assignment_expression
             Expression* lhs = create_primary_expression($1);
             Expression* rhs = create_binary_expression(lhs, TAC_ADD, $3);
             $$ = create_assignment_expression($1, rhs);
+            free($1);
+        }
+    | unary_expression ADD_ASSIGN assignment_expression
+        {
+            // Handle compound assignments for complex lvalues like ptr->member += value
+            Expression* rhs = create_binary_expression($1, TAC_ADD, $3);
+            $$ = create_general_assignment_expression($1, rhs);
         }
     | IDENTIFIER SUB_ASSIGN assignment_expression
         {
             Expression* lhs = create_primary_expression($1);
             Expression* rhs = create_binary_expression(lhs, TAC_SUB, $3);
             $$ = create_assignment_expression($1, rhs);
+            free($1);
+        }
+    | unary_expression SUB_ASSIGN assignment_expression
+        {
+            Expression* rhs = create_binary_expression($1, TAC_SUB, $3);
+            $$ = create_general_assignment_expression($1, rhs);
         }
     | IDENTIFIER MUL_ASSIGN assignment_expression
         {
             Expression* lhs = create_primary_expression($1);
             Expression* rhs = create_binary_expression(lhs, TAC_MUL, $3);
             $$ = create_assignment_expression($1, rhs);
+            free($1);
+        }
+    | unary_expression MUL_ASSIGN assignment_expression
+        {
+            Expression* rhs = create_binary_expression($1, TAC_MUL, $3);
+            $$ = create_general_assignment_expression($1, rhs);
         }
     | IDENTIFIER DIV_ASSIGN assignment_expression
         {
             Expression* lhs = create_primary_expression($1);
             Expression* rhs = create_binary_expression(lhs, TAC_DIV, $3);
             $$ = create_assignment_expression($1, rhs);
+            free($1);
+        }
+    | unary_expression DIV_ASSIGN assignment_expression
+        {
+            Expression* rhs = create_binary_expression($1, TAC_DIV, $3);
+            $$ = create_general_assignment_expression($1, rhs);
         }
     | IDENTIFIER MOD_ASSIGN assignment_expression
         {
             Expression* lhs = create_primary_expression($1);
             Expression* rhs = create_binary_expression(lhs, TAC_MOD, $3);
             $$ = create_assignment_expression($1, rhs);
+            free($1);
+        }
+    | unary_expression MOD_ASSIGN assignment_expression
+        {
+            Expression* rhs = create_binary_expression($1, TAC_MOD, $3);
+            $$ = create_general_assignment_expression($1, rhs);
         }
     ;
 
@@ -478,11 +518,18 @@ constant_expression
 // ============================================================================
 
 declaration
-	: declaration_specifiers ';'
-        { $$ = nullptr; }
+	: declaration_specifiers ';' {
+          // Reset current_type after declaration to avoid contamination
+          current_type = Type(TYPE_ERROR);
+          in_function_declaration = false;
+          $$ = nullptr;
+      }
 	| declaration_specifiers init_declarator_list ';'
         {
             if(debug) printf("\n--- Declaration complete ---\n");
+            // Reset after declaration
+            current_type = Type(TYPE_ERROR);
+            in_function_declaration = false;
             $$ = $2; /* Return the last declarator from the list (for use in for-loops) */
         }
 	;
@@ -498,7 +545,10 @@ declaration_specifiers
         if (!in_function_declaration) { backup_current_type = current_type; in_function_declaration = true; } 
     } // Ex:- static const int
 	| type_specifier { 
-        if (!in_function_declaration) { backup_current_type = current_type; in_function_declaration = true; } 
+        if (!in_function_declaration) { 
+            backup_current_type = current_type; 
+            in_function_declaration = true;
+        } 
     } // Ex:- int
 	| type_qualifier type_specifier { 
         if (!in_function_declaration) { backup_current_type = current_type; in_function_declaration = true; } 
@@ -645,7 +695,10 @@ type_specifier
       }
     | SIGNED
     | UNSIGNED
-    | struct_or_union_specifier
+    | struct_or_union_specifier {
+          // struct_or_union_specifier already sets current_type
+          $$ = new Type(current_type);
+      }
     | enum_specifier {
           // After parsing enum, set current_type to enum type
           current_type = Type(TYPE_ENUM);
@@ -693,11 +746,98 @@ class_member
     ;
 
 struct_or_union_specifier
-    : struct_or_union IDENTIFIER '{' struct_declaration_list '}'
-    | struct_or_union '{' struct_declaration_list '}'
-    | struct_or_union IDENTIFIER '{' '}' 
-    | struct_or_union '{' '}'
-    | struct_or_union IDENTIFIER
+    : struct_or_union IDENTIFIER '{' {
+          // Check if struct already exists in current scope
+          if (struct_exists_in_current_scope($2)) {
+              fprintf(stderr, "[Semantic Error] Redefinition of struct '%s'\n", $2);
+              semantic_error_count++;
+              current_struct = nullptr;
+          } else {
+              // Create new struct type
+              current_struct = new StructType($2);
+              register_struct_in_scope($2, current_struct);
+              if (debug) printf("[STRUCT] Created struct '%s'\n", $2);
+          }
+      } struct_declaration_list '}' {
+          // Finalize struct: calculate sizes and offsets (only if successfully created)
+          if (current_struct) {
+              current_struct->finalize();
+              if (debug) printf("[STRUCT] Finalized struct '%s', size=%d\n", current_struct->name.c_str(), current_struct->total_size);
+          }
+          
+          // Set current_type to this struct
+          current_type = Type();
+          current_type.is_struct = true;
+          current_type.struct_name = $2;
+          current_type.struct_type_ptr = lookup_struct_in_scope($2);
+          current_struct = nullptr;
+          
+          // NOTE: Don't reset in_function_declaration here, as struct can be a return type
+          
+          free($2);
+      }
+    | struct_or_union '{' {
+          // Anonymous struct - create temporary name
+          std::string temp_name = "__anon_struct_" + std::to_string(next_scope_id);
+          current_struct = new StructType(temp_name);
+          register_struct_in_scope(temp_name, current_struct);
+          if (debug) printf("[STRUCT] Created anonymous struct\n");
+      } struct_declaration_list '}' {
+          // Finalize struct
+          current_struct->finalize();
+          if (debug) printf("[STRUCT] Finalized anonymous struct, size=%d\n", current_struct->total_size);
+          
+          // Set current_type to this struct
+          current_type = Type();
+          current_type.is_struct = true;
+          current_type.struct_name = current_struct->name;
+          current_type.struct_type_ptr = current_struct;
+          current_struct = nullptr;
+          
+          // NOTE: Don't reset in_function_declaration here
+      }
+    | struct_or_union IDENTIFIER '{' '}' {
+          // Empty struct definition
+          StructType* st = new StructType($2);
+          register_struct_in_scope($2, st);
+          st->finalize();
+          
+          current_type = Type();
+          current_type.is_struct = true;
+          current_type.struct_name = $2;
+          current_type.struct_type_ptr = st;
+          if (debug) printf("[STRUCT] Created empty struct '%s'\n", $2);
+          free($2);
+      }
+    | struct_or_union '{' '}' {
+          // Anonymous empty struct
+          std::string temp_name = "__anon_struct_" + std::to_string(next_scope_id);
+          StructType* st = new StructType(temp_name);
+          register_struct_in_scope(temp_name, st);
+          st->finalize();
+          
+          current_type = Type();
+          current_type.is_struct = true;
+          current_type.struct_name = temp_name;
+          current_type.struct_type_ptr = st;
+          if (debug) printf("[STRUCT] Created anonymous empty struct\n");
+      }
+    | struct_or_union IDENTIFIER {
+          // Reference to existing struct (usage, not definition)
+          StructType* st = lookup_struct_in_scope($2);
+          if (st) {
+              current_type = Type();
+              current_type.is_struct = true;
+              current_type.struct_name = $2;
+              current_type.struct_type_ptr = st;
+              if (debug) printf("[STRUCT] Using struct '%s'\n", $2);
+          } else {
+              fprintf(stderr, "[Error] Line %d: struct '%s' not defined\n", yylineno, $2);
+              semantic_error_count++;
+              current_type = Type(TYPE_ERROR);
+          }
+          free($2);
+      }
     ;
 
 struct_declaration_list
@@ -706,7 +846,14 @@ struct_declaration_list
     ;
 
 struct_declaration
-    : specifier_qualifier_list struct_declarator_list ';'
+    : specifier_qualifier_list struct_declarator_list ';' {
+          // Members have been added to current_struct during struct_declarator_list
+          // Just reset current_type for next declaration
+          current_type = Type(TYPE_ERROR);
+          current_pointer_level = 0;
+          current_is_array = false;
+          current_array_sizes.clear();
+      }
     ;
 
 struct_declarator_list
@@ -715,9 +862,43 @@ struct_declarator_list
     ;
 
 struct_declarator
-    : declarator
-    | ':' constant_expression
-    | declarator ':' constant_expression
+    : declarator {
+          // Add member to current struct
+          if (current_struct && $1) {
+              Type* member_type = new Type(current_type);
+              member_type->pointer_level = current_pointer_level;
+              member_type->is_array = current_is_array;
+              member_type->array_dim = current_array_sizes.size();
+              member_type->array_sizes = current_array_sizes;
+              
+              current_struct->add_member($1, member_type);
+              if (debug) printf("[STRUCT] Added member '%s' of type '%s' to struct '%s'\n", 
+                               $1, member_type->to_string().c_str(), current_struct->name.c_str());
+              
+              // Reset for next member
+              current_pointer_level = 0;
+              current_is_array = false;
+              current_array_sizes.clear();
+              free($1);
+          }
+      }
+    | ':' constant_expression {
+          // Bit-field (not fully implemented, just skip)
+          if (debug) printf("[STRUCT] Bit-field (skipped)\n");
+      }
+    | declarator ':' constant_expression {
+          // Bit-field with declarator (not fully implemented)
+          if ($1) {
+              Type* member_type = new Type(current_type);
+              member_type->pointer_level = current_pointer_level;
+              current_struct->add_member($1, member_type);
+              if (debug) printf("[STRUCT] Added bit-field member '%s' (simplified)\n", $1);
+              current_pointer_level = 0;
+              current_is_array = false;
+              current_array_sizes.clear();
+              free($1);
+          }
+      }
     ;
 
 struct_or_union

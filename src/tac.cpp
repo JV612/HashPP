@@ -16,9 +16,9 @@ string TACOperand::to_string() const
 {
     if (is_empty())
         return "";
-    // For string operands, include quotes in output
+    // For string operands, the name already includes quotes from tokenizer
     if (type == OPERAND_STRING)
-        return "\"" + name + "\"";
+        return name;
     return name;
 }
 
@@ -95,6 +95,11 @@ string TACInstruction::to_string() const
 
     case TAC_DEREF_STORE:
         ss << "*" << result.to_string() << " = " << arg1.to_string();
+        break;
+
+    case TAC_MEMBER_ACCESS:
+        ss << result.to_string() << " = " << arg1.to_string()
+           << " + " << arg2.to_string() << " (member offset)";
         break;
 
     case TAC_BITWISE_AND:
@@ -268,39 +273,47 @@ void TACGenerator::backpatch(InstructionList list, int target)
     }
 }
 
-void TACGenerator::emit_label(const std::string& label_name, int instr_index) {
+void TACGenerator::emit_label(const std::string &label_name, int instr_index)
+{
     label_positions[label_name] = instr_index;
 
     // Backpatch any gotos waiting for this label
     auto it = label_patchlists.find(label_name);
-    if (it != label_patchlists.end()) {
-        for (int idx : it->second) {
+    if (it != label_patchlists.end())
+    {
+        for (int idx : it->second)
+        {
             code[idx]->target_line = instr_index;
         }
         label_patchlists.erase(it);
     }
 }
 
-void TACGenerator::emit_goto(const std::string& label_name, int instr_index) {
+void TACGenerator::emit_goto(const std::string &label_name, int instr_index)
+{
     auto it = label_positions.find(label_name);
-    if (it != label_positions.end()) {
+    if (it != label_positions.end())
+    {
         code[instr_index]->target_line = it->second;
-    } else {
+    }
+    else
+    {
         label_patchlists[label_name].push_back(instr_index);
     }
 }
 
-void TACGenerator::finalize_labels() {
-    for (const auto& entry : label_patchlists) {
-        for (int idx : entry.second) {
+void TACGenerator::finalize_labels()
+{
+    for (const auto &entry : label_patchlists)
+    {
+        for (int idx : entry.second)
+        {
             cout << "[Error] Unresolved label '" << entry.first << "' for instruction at line " << code[idx]->line_number << endl;
             semantic_error_count++;
-
         }
     }
 
     label_patchlists.clear();
-
 }
 
 void TACGenerator::print() const

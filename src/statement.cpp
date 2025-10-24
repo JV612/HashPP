@@ -1203,7 +1203,7 @@ void ReturnStatement::generate_tac()
     current_function_has_return = true;
 
     // Check if we're inside a function (current_function_return_type should be set)
-    if (current_function_return_type.base_type == TYPE_ERROR)
+    if (current_function_return_type.is_error())
     {
         fprintf(stderr, "[Error] Line %d: Return statement outside of function\n", line_no);
         semantic_error_count++;

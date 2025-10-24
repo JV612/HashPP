@@ -56,7 +56,7 @@ void VariableDeclaration::insert_symbol()
     if (debug)
     {
         cout << "[AST] Variable declaration: " << var_name
-             << " (type: " << decl_type->to_string() 
+             << " (type: " << decl_type->to_string()
              << ", static: " << (is_static ? "yes" : "no") << ")" << endl;
     }
 
@@ -125,7 +125,7 @@ void VariableDeclaration::generate_tac()
             handle_array_initialization(array_init);
             return;
         }
-        
+
         initializer->generate_tac();
 
         // ========================================================================
@@ -155,7 +155,19 @@ void VariableDeclaration::generate_tac()
             decl_type->pointer_level == initializer->type->pointer_level &&
             decl_type->is_array == initializer->type->is_array)
         {
-            compatible = true;
+            // For struct types, also check struct names match
+            if (decl_type->is_struct && initializer->type->is_struct)
+            {
+                if (decl_type->struct_name == initializer->type->struct_name)
+                {
+                    compatible = true;
+                }
+            }
+            else if (!decl_type->is_struct && !initializer->type->is_struct)
+            {
+                compatible = true;
+            }
+            // else: one is struct, one is not -> incompatible
         }
         // Array decay check: array T[N] can initialize pointer T*
         else if (decl_type->pointer_level == 1 && !decl_type->is_array &&
@@ -166,7 +178,7 @@ void VariableDeclaration::generate_tac()
             compatible = true;
         }
         // Null constant check: null can be assigned to any pointer type
-        else if (decl_type->pointer_level > 0 && 
+        else if (decl_type->pointer_level > 0 &&
                  initializer->type->base_type == TYPE_VOID && initializer->type->pointer_level == 1)
         {
             // Allow null constants to be assigned to any pointer type
@@ -214,17 +226,17 @@ void VariableDeclaration::handle_array_initialization(ArrayInitializerExpression
 {
     if (debug)
     {
-        cout << "[AST] Handling array initialization for " << var_name 
+        cout << "[AST] Handling array initialization for " << var_name
              << " with " << array_init->initializers.size() << " elements" << endl;
     }
-    
+
     // Get the array size from the type
     int array_size = 0;
     if (!decl_type->array_sizes.empty())
     {
         array_size = decl_type->array_sizes[0];
     }
-    
+
     // Check that we don't have too many initializers
     if (array_init->initializers.size() > static_cast<size_t>(array_size))
     {
@@ -233,62 +245,81 @@ void VariableDeclaration::handle_array_initialization(ArrayInitializerExpression
         semantic_error_count++;
         return;
     }
-    
+
     // Generate TAC for all initializer expressions first
     for (Expression *expr : array_init->initializers)
     {
         expr->generate_tac();
         code.insert(code.end(), expr->code.begin(), expr->code.end());
     }
-    
+
     // Get the symbol for the array
     Symbol *sym = inserted_symbol ? inserted_symbol : lookup_symbol(var_name);
     string base_name = sym ? mangle_for_tac(var_name, sym) : var_name;
-    
+
     // Generate individual assignments for each element: arr[0] = val1, arr[1] = val2, etc.
     for (size_t i = 0; i < array_init->initializers.size(); i++)
     {
         Expression *init_expr = array_init->initializers[i];
-        
+
         // Type check the initializer
         if (!init_expr->type)
         {
-            fprintf(stderr, "[Type Error] Line %d: Missing type in array initializer element %zu\n", 
+            fprintf(stderr, "[Type Error] Line %d: Missing type in array initializer element %zu\n",
                     line_no, i);
             semantic_error_count++;
             continue;
         }
-        
+
         // Check type compatibility
-        if (decl_type->base_type != init_expr->type->base_type ||
-            decl_type->pointer_level != init_expr->type->pointer_level)
+        bool elem_compatible = false;
+
+        if (decl_type->base_type == init_expr->type->base_type &&
+            decl_type->pointer_level == init_expr->type->pointer_level)
         {
-            // Allow some numeric conversions
-            if (!(decl_type->pointer_level == 0 && init_expr->type->pointer_level == 0 &&
-                  decl_type->is_numeric() && init_expr->type->is_numeric()))
+            // For struct types, also check struct names match
+            if (decl_type->is_struct && init_expr->type->is_struct)
             {
-                fprintf(stderr, "[Type Error] Line %d: Incompatible type in array initializer element %zu\n", 
-                        line_no, i);
-                semantic_error_count++;
-                continue;
+                if (decl_type->struct_name == init_expr->type->struct_name)
+                {
+                    elem_compatible = true;
+                }
+            }
+            else if (!decl_type->is_struct && !init_expr->type->is_struct)
+            {
+                elem_compatible = true;
             }
         }
-        
+        // Allow some numeric conversions
+        else if (decl_type->pointer_level == 0 && init_expr->type->pointer_level == 0 &&
+                 decl_type->is_numeric() && init_expr->type->is_numeric())
+        {
+            elem_compatible = true;
+        }
+
+        if (!elem_compatible)
+        {
+            fprintf(stderr, "[Type Error] Line %d: Incompatible type in array initializer element %zu\n",
+                    line_no, i);
+            semantic_error_count++;
+            continue;
+        }
+
         // Calculate array element address: base + i * sizeof(element)
         TACOperand index_op(TACOperand::OPERAND_CONSTANT, std::to_string(i));
         TACOperand element_size_op(TACOperand::OPERAND_CONSTANT, std::to_string(decl_type->get_size()));
-        
+
         // offset = i * sizeof(element)
         TACOperand offset_temp = tacGen.newTemp();
         tacGen.emit(TAC_MUL, offset_temp, index_op, element_size_op);
         code.push_back(tacGen.getCode().back());
-        
+
         // addr = base + offset
         TACOperand base_op(TACOperand::OPERAND_IDENTIFIER, base_name);
         TACOperand addr_temp = tacGen.newTemp();
         tacGen.emit(TAC_ADD, addr_temp, base_op, offset_temp);
         code.push_back(tacGen.getCode().back());
-        
+
         // *addr = value
         tacGen.emit(TAC_DEREF_STORE, addr_temp, *init_expr->result);
         code.push_back(tacGen.getCode().back());

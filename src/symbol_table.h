@@ -47,6 +47,47 @@ bool is_enum_member(const std::string &identifier);
 int get_enum_member_value(const std::string &identifier);
 
 // ============================================================================
+// Forward Declarations
+// ============================================================================
+class Type; // Forward declaration for StructType
+
+// ============================================================================
+// Struct/Union Type Support
+// ============================================================================
+
+class StructType
+{
+public:
+    std::string name;                                    // Name of the struct (e.g., "Node")
+    std::vector<std::pair<std::string, Type *>> members; // Ordered list of members (name, type)
+    std::unordered_map<std::string, int> member_offsets; // member_name -> byte offset
+    int total_size;                                      // Total size in bytes
+
+    StructType(const std::string &n) : name(n), total_size(0) {}
+    ~StructType()
+    {
+        for (auto &member : members)
+        {
+            delete member.second;
+        }
+    }
+
+    void add_member(const std::string &member_name, Type *member_type);
+    int get_member_offset(const std::string &member_name) const;
+    Type *get_member_type(const std::string &member_name) const;
+    bool has_member(const std::string &member_name) const;
+    void finalize(); // Calculate offsets and total size
+};
+
+// Helper functions for scope-aware struct management
+void register_struct_in_scope(const std::string &struct_name, StructType *struct_type);
+StructType *lookup_struct_in_scope(const std::string &struct_name);
+bool struct_exists_in_current_scope(const std::string &struct_name);
+
+// Track current struct being parsed
+extern StructType *current_struct;
+
+// ============================================================================
 // Type System
 // ============================================================================
 
@@ -62,11 +103,16 @@ public:
     int array_dim;                // Number of dimensions (0 for non-array)
     std::vector<int> array_sizes; // Size of each dimension [5][3][2]
 
+    // Struct support
+    bool is_struct;              // true if this is a struct type
+    std::string struct_name;     // name of the struct (e.g., "Node")
+    StructType *struct_type_ptr; // Direct pointer to the StructType (for scope-aware access)
+
     Type() : base_type(TYPE_ERROR), pointer_level(0), is_const(false),
-             is_array(false), array_dim(0) {}
+             is_array(false), array_dim(0), is_struct(false), struct_type_ptr(nullptr) {}
     Type(PrimitiveType bt, int ptr = 0, bool c = false)
         : base_type(bt), pointer_level(ptr), is_const(c),
-          is_array(false), array_dim(0) {}
+          is_array(false), array_dim(0), is_struct(false), struct_type_ptr(nullptr) {}
 
     std::string to_string() const;
     int get_size() const;         // Size in bytes for a single element
@@ -89,7 +135,7 @@ public:
     std::string name;
     Type type;
     int scope;
-    int offset; // Memory offset
+    int offset;     // Memory offset
     bool is_static; // Whether this is a static variable
 
     // For enum constants
@@ -107,6 +153,9 @@ private:
     // Hash table with list for handling scope/shadowing
     std::unordered_map<std::string, std::list<Symbol *>> table;
 
+    // Struct types for this scope
+    std::unordered_map<std::string, StructType *> struct_types;
+
 public:
     int Scopelevel;   // scope level of SymbolTable
     int scopeCounter; // Monotonically increasing scope ID (never reused)
@@ -123,6 +172,10 @@ public:
     Symbol *insert(const std::string &name, Type type);
     // Lookup only within this table (no parent traversal)
     Symbol *lookup(const std::string &name);
+
+    // Struct operations (scope-local)
+    bool register_struct(const std::string &name, StructType *st);
+    StructType *lookup_struct_local(const std::string &name);
 
     // Utilities
     void print() const;
