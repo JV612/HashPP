@@ -62,8 +62,9 @@ public:
     std::vector<std::pair<std::string, Type *>> members; // Ordered list of members (name, type)
     std::unordered_map<std::string, int> member_offsets; // member_name -> byte offset
     int total_size;                                      // Total size in bytes
+    bool is_union;                                       // Treat as union (overlay) when true
 
-    StructType(const std::string &n) : name(n), total_size(0) {}
+    StructType(const std::string &n) : name(n), total_size(0), is_union(false) {}
     ~StructType()
     {
         for (auto &member : members)

@@ -37,6 +37,9 @@ EnumType* current_enum = nullptr;
 // Track current struct being parsed (declared in symbol_table.h)
 // extern StructType* current_struct;
 
+// Track whether we're currently parsing a union (true) or struct (false)
+bool current_is_parsing_union = false;
+
 // List to hold declarators from comma-separated lists that need deferred TAC generation
 std::vector<Declaration*> pending_declarator_tac;
 
@@ -755,6 +758,8 @@ struct_or_union_specifier
           } else {
               // Create new struct type
               current_struct = new StructType($2);
+              // Mark as union if needed
+              current_struct->is_union = current_is_parsing_union;
               register_struct_in_scope($2, current_struct);
               if (debug) printf("[STRUCT] Created struct '%s'\n", $2);
           }
@@ -780,6 +785,7 @@ struct_or_union_specifier
           // Anonymous struct - create temporary name
           std::string temp_name = "__anon_struct_" + std::to_string(next_scope_id);
           current_struct = new StructType(temp_name);
+          current_struct->is_union = current_is_parsing_union;
           register_struct_in_scope(temp_name, current_struct);
           if (debug) printf("[STRUCT] Created anonymous struct\n");
       } struct_declaration_list '}' {
@@ -799,6 +805,7 @@ struct_or_union_specifier
     | struct_or_union IDENTIFIER '{' '}' {
           // Empty struct definition
           StructType* st = new StructType($2);
+          st->is_union = current_is_parsing_union;
           register_struct_in_scope($2, st);
           st->finalize();
           
@@ -813,6 +820,7 @@ struct_or_union_specifier
           // Anonymous empty struct
           std::string temp_name = "__anon_struct_" + std::to_string(next_scope_id);
           StructType* st = new StructType(temp_name);
+          st->is_union = current_is_parsing_union;
           register_struct_in_scope(temp_name, st);
           st->finalize();
           
@@ -826,6 +834,11 @@ struct_or_union_specifier
           // Reference to existing struct (usage, not definition)
           StructType* st = lookup_struct_in_scope($2);
           if (st) {
+              // Check kind matches (struct vs union)
+              if (st->is_union != current_is_parsing_union) {
+                  fprintf(stderr, "[Error] Line %d: tag '%s' is a %s, not a %s\n", yylineno, $2, st->is_union ? "union" : "struct", st->is_union ? "struct" : "union");
+                  semantic_error_count++;
+              }
               current_type = Type();
               current_type.is_struct = true;
               current_type.struct_name = $2;
@@ -902,8 +915,8 @@ struct_declarator
     ;
 
 struct_or_union
-    : STRUCT
-    | UNION
+    : STRUCT { current_is_parsing_union = false; }
+    | UNION  { current_is_parsing_union = true; }
     ;
 
 enum_specifier

@@ -141,14 +141,34 @@ bool StructType::has_member(const std::string &member_name) const
 void StructType::finalize()
 {
     // Calculate offsets and total size
-    int current_offset = 0;
-    for (auto &member : members)
+    member_offsets.clear();
+    total_size = 0;
+
+    if (is_union)
     {
-        member_offsets[member.first] = current_offset;
-        int member_size = member.second->get_total_size();
-        current_offset += member_size;
+        // Union: all members start at offset 0, size is max(member size)
+        int max_size = 0;
+        for (auto &member : members)
+        {
+            member_offsets[member.first] = 0;
+            int member_size = member.second->get_total_size();
+            if (member_size > max_size)
+                max_size = member_size;
+        }
+        total_size = max_size;
     }
-    total_size = current_offset;
+    else
+    {
+        // Struct: members laid out sequentially
+        int current_offset = 0;
+        for (auto &member : members)
+        {
+            member_offsets[member.first] = current_offset;
+            int member_size = member.second->get_total_size();
+            current_offset += member_size;
+        }
+        total_size = current_offset;
+    }
 }
 
 // ============================================================================
