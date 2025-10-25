@@ -1,6 +1,7 @@
 #include "statement.h"
 #include "declaration.h"
 #include "symbol_table.h"
+#include <algorithm>
 #include <iostream>
 #include <cstdio>
 
@@ -16,6 +17,27 @@ static int loop_depth = 0;
 // ============================================================================
 // Current function return type (value) is defined in ansic.y
 extern Type current_function_return_type;
+
+// ============================================================================
+// Active compound scope stack for destructor tracking during codegen
+// ============================================================================
+static std::vector<CompoundStatement*> active_compound_stack;
+
+// Forward decl for helper used in return/scope-exit to emit destructor calls
+static void emit_destructor_for_symbol(Symbol* sym, std::vector<TACInstruction*>& out);
+
+// Registration API used by declaration codegen when a class object is constructed
+void register_constructed_local(Symbol* sym)
+{
+    if (!active_compound_stack.empty() && sym)
+    {
+        active_compound_stack.back()->constructed_locals.push_back(sym);
+        if (debug)
+        {
+            printf("[RAII] Registered constructed local '%s' in scope %d\n", sym->name.c_str(), sym->scope);
+        }
+    }
+}
 
 // ============================================================================
 // Statement Implementation
@@ -783,6 +805,9 @@ void CompoundStatement::generate_tac()
     if (debug)
         printf("[CompoundStatement] Generating TAC for %zu statements\n", statements.size());
 
+    // Push this compound on active stack for destructor tracking
+    active_compound_stack.push_back(this);
+
     InstructionList current_nextlist;
 
     for (size_t i = 0; i < statements.size(); i++)
@@ -804,6 +829,20 @@ void CompoundStatement::generate_tac()
         breaklist = merge(breaklist, stmt->breaklist);
         continuelist = merge(continuelist, stmt->continuelist);
     }
+
+    // On scope exit: emit destructors for constructed locals in reverse order
+    if (!constructed_locals.empty())
+    {
+        if (debug)
+            printf("[RAII] Emitting %zu destructor(s) at scope exit\n", constructed_locals.size());
+        for (auto it = constructed_locals.rbegin(); it != constructed_locals.rend(); ++it)
+        {
+            emit_destructor_for_symbol(*it, code);
+        }
+    }
+
+    // Pop this scope
+    active_compound_stack.pop_back();
 
     // The compound statement's nextlist is the last statement's nextlist
     nextlist = current_nextlist;
@@ -1471,6 +1510,19 @@ void ReturnStatement::generate_tac()
         expr->generate_tac();
         code = expr->code;
 
+        // Emit destructors for all active scopes (innermost-first, per-scope reverse order)
+        if (!active_compound_stack.empty())
+        {
+            for (auto scope_it = active_compound_stack.rbegin(); scope_it != active_compound_stack.rend(); ++scope_it)
+            {
+                CompoundStatement* scope = *scope_it;
+                for (auto sym_it = scope->constructed_locals.rbegin(); sym_it != scope->constructed_locals.rend(); ++sym_it)
+                {
+                    emit_destructor_for_symbol(*sym_it, code);
+                }
+            }
+        }
+
         // Type check: compare expr->type against current_function_return_type (value)
         if (expr->type)
         {
@@ -1549,6 +1601,18 @@ void ReturnStatement::generate_tac()
     }
     else
     {
+        // No return value: still ensure destructors run before returning
+        if (!active_compound_stack.empty())
+        {
+            for (auto scope_it = active_compound_stack.rbegin(); scope_it != active_compound_stack.rend(); ++scope_it)
+            {
+                CompoundStatement* scope = *scope_it;
+                for (auto sym_it = scope->constructed_locals.rbegin(); sym_it != scope->constructed_locals.rend(); ++sym_it)
+                {
+                    emit_destructor_for_symbol(*sym_it, code);
+                }
+            }
+        }
         tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
         code.push_back(tacGen.getCode().back());
     }
@@ -1657,4 +1721,38 @@ GotoStatement *create_goto_statement(const std::string &label)
 LabelStatement *create_label_statement(const std::string &label, Statement *stmt)
 {
     return new LabelStatement(label, stmt);
+}
+
+// ============================================================================
+// Helper: emit destructor call for a constructed class object symbol
+// ============================================================================
+static void emit_destructor_for_symbol(Symbol* sym, std::vector<TACInstruction*>& out)
+{
+    if (!sym)
+        return;
+
+    // Only for class objects (non-pointer direct objects)
+    if (!sym->type.is_class || sym->type.pointer_level > 0)
+        return;
+
+    const std::string& class_name = sym->type.class_name;
+    // Check if destructor exists: ~ClassName with no parameters
+    std::vector<Type> no_params;
+    MethodSignature* dtor = find_method_match(class_name, "~" + class_name, no_params);
+    if (!dtor)
+    {
+        // No user-declared destructor; skip silently
+        return;
+    }
+
+    // Build object expression referring to the exact symbol (ensure correct mangling)
+    PrimaryExpression* obj = create_primary_expression(sym->name);
+    obj->symbol_ref = sym; // force correct symbol for mangling
+
+    std::vector<Expression*> empty_args;
+    MethodCallExpression* call = create_method_call_expression(obj, ("~" + class_name).c_str(), &empty_args);
+    call->generate_tac();
+    // Append generated TAC
+    out.insert(out.end(), call->code.begin(), call->code.end());
+    delete call; // cleans up obj too
 }

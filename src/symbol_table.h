@@ -302,6 +302,10 @@ struct MethodSignature
     Type returnType;          // method return type
     int MethodID;             // unique method ID for overloading
     
+    // Special method flags
+    bool is_constructor;      // true if this is a constructor
+    bool is_destructor;       // true if this is a destructor
+    
     // Mangled name for TAC generation (includes class name + method name + signature)
     std::string mangled_name;
 };
@@ -328,7 +332,8 @@ FunctionSignature *register_function(const std::string &name, const std::vector<
 
 // Register a method (class_name + method_name + params + return type)
 MethodSignature *register_method(const std::string &class_name, const std::string &method_name, 
-                                  const std::vector<Type> &params, const Type &retType);
+                                  const std::vector<Type> &params, const Type &retType, 
+                                  bool is_constructor = false, bool is_destructor = false);
 
 // Find function by name and arg type list; returns index or -1
 int find_function_match(const std::string &name, const std::vector<Type> &argTypes);

@@ -1,5 +1,6 @@
 #include "declaration.h"
 #include "symbol_table.h"
+#include "statement.h" // for register_constructed_local
 #include <iostream>
 #include <cstdio>
 
@@ -117,6 +118,30 @@ void VariableDeclaration::generate_tac()
     // If there's an initializer, generate code for it
     if (initializer)
     {
+        // Special case: constructor-style initialization for class objects.
+        // Detect pattern: initializer is a method call whose method name == class name
+        // In that case, we only need to emit the call (which uses 'this' = &var),
+        // and we do NOT perform assignment/type checking against decl_type.
+        if (decl_type && decl_type->is_class)
+        {
+            if (MethodCallExpression *mce = dynamic_cast<MethodCallExpression *>(initializer))
+            {
+                if (mce->method_name == decl_type->class_name)
+                {
+                    // Emit TAC for the constructor call and return
+                    initializer->generate_tac();
+                    code = initializer->code;
+                    // Register this local as constructed for destructor emission
+                    Symbol *sym = inserted_symbol ? inserted_symbol : lookup_symbol(var_name);
+                    if (sym && sym->type.is_class && sym->type.pointer_level == 0)
+                    {
+                        register_constructed_local(sym);
+                    }
+                    return;
+                }
+            }
+        }
+
         // Check if this is an array initializer
         ArrayInitializerExpression *array_init = dynamic_cast<ArrayInitializerExpression *>(initializer);
         if (array_init && decl_type->is_array)
@@ -219,6 +244,22 @@ void VariableDeclaration::generate_tac()
         TACOperand lhs(TACOperand::OPERAND_IDENTIFIER, mangled_name);
         tacGen.emit(TAC_ASSIGN, lhs, *initializer->result);
         code.push_back(tacGen.getCode().back());
+    }
+
+    // Even without an explicit initializer, register non-pointer class locals
+    // so that destructors are emitted on returns and scope exits.
+    // Do not register globals or statics.
+    if (!initializer && decl_type && decl_type->is_class && decl_type->pointer_level == 0 && !is_static)
+    {
+        Symbol *sym = inserted_symbol ? inserted_symbol : lookup_symbol(var_name);
+        if (sym && sym->scope > 0) // local scopes have positive scope ids
+        {
+            register_constructed_local(sym);
+            if (debug)
+            {
+                printf("[RAII] Registered (no-init) class local '%s' for destructor\n", var_name.c_str());
+            }
+        }
     }
 }
 

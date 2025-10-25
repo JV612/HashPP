@@ -156,6 +156,8 @@ VariableDeclaration* create_variable_declaration(Type* var_type, const char* var
 %type <decl> declaration
 %type <decl> init_declarator
 %type <decl> init_declarator_list
+%type <decl> class_ctor_declarator
+%type <decl> class_ctor_declarator_list
 
 %type <stmt> statement
 %type <stmt> labeled_statement
@@ -566,6 +568,14 @@ declaration
             in_function_declaration = false;
             $$ = $2; /* Return the last declarator from the list (for use in for-loops) */
         }
+	| class_specifier class_ctor_declarator_list ';'
+        {
+            if(debug) printf("\n--- Class declaration (with optional ctor-init) complete ---\n");
+            // Reset after declaration
+            current_type = Type(TYPE_ERROR);
+            in_function_declaration = false;
+            $$ = $2;
+        }
 	;
 
 declaration_specifiers
@@ -613,6 +623,118 @@ init_declarator_list
             $$ = $3;  /* Return the latest declarator */
         }
 	;
+
+// Special declarator list for class object declarations to support ctor-style initialization
+class_ctor_declarator_list
+    : class_ctor_declarator
+        { $$ = $1; }
+    | class_ctor_declarator_list ',' class_ctor_declarator
+        {
+            if ($1) {
+                VariableDeclaration* var_decl = dynamic_cast<VariableDeclaration*>($1);
+                if (var_decl && !var_decl->inserted_symbol) {
+                    $1->insert_symbol();
+                }
+                pending_declarator_tac.push_back($1);
+            }
+            $$ = $3;
+        }
+    ;
+
+class_ctor_declarator
+    : declarator {
+          if ($1) {
+              if(debug) printf("[Parser] Class object variable: %s\n", $1);
+              // Create type with pointer level from declarator
+              Type* var_type = new Type(current_type);
+              var_type->pointer_level = current_pointer_level;
+              var_type->is_array = current_is_array;
+              var_type->array_dim = current_array_sizes.size();
+              var_type->array_sizes = current_array_sizes;
+
+              VariableDeclaration* decl = create_variable_declaration(
+                  var_type,
+                  $1,
+                  nullptr
+              );
+              $$ = decl;
+
+              // Reset for next declarator
+              current_pointer_level = 0;
+              current_is_array = false;
+              current_array_sizes.clear();
+              current_is_static = false;
+          } else {
+              $$ = nullptr;
+          }
+      }
+    | IDENTIFIER '(' ')'
+      {
+          // Constructor-style initialization with no arguments: class T var();
+          if ($1) {
+              if (debug) printf("[Parser] Constructor-style init (no args): %s\n", $1);
+
+              // Must be a class type on the left (guaranteed in this production)
+              Type* var_type = new Type(current_type);
+              var_type->pointer_level = 0; // direct object
+
+              VariableDeclaration* decl = create_variable_declaration(var_type, $1, nullptr);
+              decl->insert_symbol();
+
+              // Create object expression for the just-declared variable
+              Expression* obj = create_primary_expression(std::string($1));
+
+              // Create a method call expression: obj.ClassName()
+              std::vector<Expression*> no_args;
+              Expression* ctor_call = create_method_call_expression(obj, current_type.class_name.c_str(), &no_args);
+
+              // Attach initializer
+              decl->initializer = ctor_call;
+              $$ = decl;
+
+              // Reset for next declarator
+              current_pointer_level = 0;
+              current_is_array = false;
+              current_array_sizes.clear();
+              current_is_static = false;
+          } else {
+              $$ = nullptr;
+          }
+      }
+    | IDENTIFIER '(' argument_expression_list ')'
+      {
+          // Constructor-style initialization with arguments: class T var(arg1, ...);
+          if ($1) {
+              if (debug) printf("[Parser] Constructor-style init (with args): %s\n", $1);
+
+              // Build declaration first and insert symbol so the object is visible
+              Type* var_type = new Type(current_type);
+              var_type->pointer_level = 0; // direct object
+
+              VariableDeclaration* decl = create_variable_declaration(var_type, $1, nullptr);
+              decl->insert_symbol();
+
+              // Create object expression for the just-declared variable
+              Expression* obj = create_primary_expression(std::string($1));
+
+              // Create a method call expression: obj.ClassName(args...)
+              Expression* ctor_call = create_method_call_expression(obj, current_type.class_name.c_str(), $3);
+
+              // Attach initializer
+              decl->initializer = ctor_call;
+              $$ = decl;
+
+              // Cleanup and reset for next declarator
+              delete $3;
+              current_pointer_level = 0;
+              current_is_array = false;
+              current_array_sizes.clear();
+              current_is_static = false;
+          } else {
+              $$ = nullptr;
+          }
+      }
+    ;
 
 init_declarator
 	: declarator {
@@ -851,6 +973,198 @@ class_member
           current_is_array = false;
           current_array_sizes.clear();
       }
+    | IDENTIFIER '(' ')' {
+          // Constructor with no parameters (no explicit return type)
+          if (current_class) {
+              // Finalize class before first method
+              if (!class_finalized_for_methods) {
+                  current_class->finalize();
+                  class_finalized_for_methods = true;
+                  if (debug) printf("[CLASS] Finalized class '%s' before methods, size=%d\n", 
+                                   current_class->name.c_str(), current_class->total_size);
+              }
+              
+              // Validate constructor name matches class name
+              if (std::string($1) != current_class->name) {
+                  fprintf(stderr, "[Semantic Error] Line %d: Constructor name '%s' must match class name '%s'\n",
+                          yylineno, $1, current_class->name.c_str());
+                  semantic_error_count++;
+              }
+              
+              pending_method_name = $1;
+              pending_method_return_type = Type(TYPE_VOID); // Constructors are always void
+              
+              if (debug) printf("[CLASS] Starting constructor '%s()' in class '%s'\n", $1, current_class->name.c_str());
+              
+              // Register constructor
+              std::vector<Type> empty_params;
+              MethodSignature* method = register_method(current_class->name, pending_method_name,
+                                                        empty_params, pending_method_return_type, true);
+              if (method) {
+                  current_class->add_method(method);
+                  current_method_signature = method;
+                  current_function_return_type = method->returnType;
+                  
+                  // Emit TAC label
+                  tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL, method->mangled_name), TACOperand());
+                  if (debug) printf("[TAC] %s:\n", method->mangled_name.c_str());
+                  
+                  current_function_has_return = false;
+                  if (debug) printf("[CLASS] Registered constructor '%s::%s' (no params)\n",
+                                   current_class->name.c_str(), pending_method_name.c_str());
+              }
+              free($1);
+          }
+      } compound_statement {
+          // Generate TAC for constructor body
+          if ($5 && current_class) {
+              if (debug) printf("[CONSTRUCTOR] Generating TAC for constructor body\n");
+              $5->generate_tac();
+          }
+          
+          // Constructors always get implicit return
+          if (current_method_signature && current_method_signature->is_constructor) {
+              tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
+              if(debug) printf("[Constructor] Added implicit return for constructor '%s'\n", 
+                              current_method_signature->mangled_name.c_str());
+          }
+          
+          // Clear method context
+          current_method_signature = nullptr;
+          current_function_return_type = Type(TYPE_ERROR);
+          pending_method_name = "";
+          pending_method_return_type = Type(TYPE_ERROR);
+      }
+    | IDENTIFIER '(' {
+          // Constructor with parameters (no explicit return type)
+          if (current_class) {
+              // Finalize class before first method
+              if (!class_finalized_for_methods) {
+                  current_class->finalize();
+                  class_finalized_for_methods = true;
+                  if (debug) printf("[CLASS] Finalized class '%s' before methods, size=%d\n", 
+                                   current_class->name.c_str(), current_class->total_size);
+              }
+              
+              // Validate constructor name matches class name
+              if (std::string($1) != current_class->name) {
+                  fprintf(stderr, "[Semantic Error] Line %d: Constructor name '%s' must match class name '%s'\n",
+                          yylineno, $1, current_class->name.c_str());
+                  semantic_error_count++;
+              }
+              
+              pending_method_name = $1;
+              pending_method_return_type = Type(TYPE_VOID); // Constructors are always void
+              
+              if (debug) printf("[CLASS] Starting constructor '%s(...)' in class '%s'\n", $1, current_class->name.c_str());
+              free($1);
+          }
+      } parameter_type_list ')' {
+          // Register constructor
+          if (current_class) {
+              if (debug) printf("[CLASS] About to register constructor '%s::%s' with %d params\n",
+                               current_class->name.c_str(), pending_method_name.c_str(),
+                               (int)pending_method_param_types.size());
+              MethodSignature* method = register_method(current_class->name, pending_method_name,
+                                                        pending_method_param_types, pending_method_return_type, true);
+              if (method) {
+                  current_class->add_method(method);
+                  current_method_signature = method;
+                  current_function_return_type = method->returnType;
+                  
+                  // Emit TAC label
+                  tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL, method->mangled_name), TACOperand());
+                  if (debug) printf("[TAC] %s:\n", method->mangled_name.c_str());
+                  
+                  current_function_has_return = false;
+                  if (debug) printf("[CLASS] Registered constructor '%s::%s' with %d params\n",
+                                   current_class->name.c_str(), pending_method_name.c_str(),
+                                   (int)pending_method_param_types.size());
+              }
+          }
+      } compound_statement {
+          // Generate TAC for constructor body
+          if ($7 && current_class) {
+              if (debug) printf("[CONSTRUCTOR] Generating TAC for constructor body\n");
+              $7->generate_tac();
+          }
+          
+          // Constructors always get implicit return
+          if (current_method_signature && current_method_signature->is_constructor) {
+              tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
+              if(debug) printf("[Constructor] Added implicit return for constructor '%s'\n", 
+                              current_method_signature->mangled_name.c_str());
+          }
+          
+          // Clear method context
+          current_method_signature = nullptr;
+          current_function_return_type = Type(TYPE_ERROR);
+          pending_method_param_types.clear();
+          pending_method_name = "";
+          pending_method_return_type = Type(TYPE_ERROR);
+      }
+    | '~' IDENTIFIER '(' ')' {
+          // Destructor (no parameters, no return type)
+          if (current_class) {
+              // Finalize class before first method
+              if (!class_finalized_for_methods) {
+                  current_class->finalize();
+                  class_finalized_for_methods = true;
+                  if (debug) printf("[CLASS] Finalized class '%s' before methods, size=%d\n", 
+                                   current_class->name.c_str(), current_class->total_size);
+              }
+              
+              // Validate destructor name matches class name
+              if (std::string($2) != current_class->name) {
+                  fprintf(stderr, "[Semantic Error] Line %d: Destructor name '~%s' must match class name '~%s'\n",
+                          yylineno, $2, current_class->name.c_str());
+                  semantic_error_count++;
+              }
+              
+              pending_method_name = "~" + std::string($2);
+              pending_method_return_type = Type(TYPE_VOID); // Destructors are always void
+              
+              if (debug) printf("[CLASS] Starting destructor '~%s()' in class '%s'\n", $2, current_class->name.c_str());
+              
+              // Register destructor
+              std::vector<Type> empty_params;
+              MethodSignature* method = register_method(current_class->name, pending_method_name,
+                                                        empty_params, pending_method_return_type, false, true);
+              if (method) {
+                  current_class->add_method(method);
+                  current_method_signature = method;
+                  current_function_return_type = method->returnType;
+                  
+                  // Emit TAC label
+                  tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL, method->mangled_name), TACOperand());
+                  if (debug) printf("[TAC] %s:\n", method->mangled_name.c_str());
+                  
+                  current_function_has_return = false;
+                  if (debug) printf("[CLASS] Registered destructor '%s::%s'\n",
+                                   current_class->name.c_str(), pending_method_name.c_str());
+              }
+              free($2);
+          }
+      } compound_statement {
+          // Generate TAC for destructor body
+          if ($6 && current_class) {
+              if (debug) printf("[DESTRUCTOR] Generating TAC for destructor body\n");
+              $6->generate_tac();
+          }
+          
+          // Destructors always get implicit return
+          if (current_method_signature && current_method_signature->is_destructor) {
+              tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
+              if(debug) printf("[Destructor] Added implicit return for destructor '%s'\n", 
+                              current_method_signature->mangled_name.c_str());
+          }
+          
+          // Clear method context
+          current_method_signature = nullptr;
+          current_function_return_type = Type(TYPE_ERROR);
+          pending_method_name = "";
+          pending_method_return_type = Type(TYPE_ERROR);
+      }
     | type_specifier pointer class_declarator_list ';' {
           // Data members with pointer (e.g., int* ptr;)
           current_type = Type(TYPE_ERROR);
@@ -873,12 +1187,26 @@ class_member
               pending_method_name = $2;  // METHOD variable (not pending_function_name)
               pending_method_return_type = method_return_type_backup;  // METHOD variable
               pending_method_return_type.pointer_level = 0;
-              if (debug) printf("[CLASS] Starting method '%s()' in class '%s'\n", $2, current_class->name.c_str());
+              
+              // Check if this is a constructor - method name same as class name
+              bool is_constructor = (pending_method_name == current_class->name);
+              if (is_constructor) {
+                  // Constructor validation: should have void return type (implicitly)
+                  if (method_return_type_backup.base_type != TYPE_VOID) {
+                      fprintf(stderr, "[Semantic Error] Line %d: Constructor '%s' cannot have explicit return type\n",
+                              yylineno, pending_method_name.c_str());
+                      semantic_error_count++;
+                  }
+                  pending_method_return_type = Type(TYPE_VOID); // Force constructor to be void
+                  if (debug) printf("[CLASS] Starting constructor '%s()' in class '%s'\n", $2, current_class->name.c_str());
+              } else {
+                  if (debug) printf("[CLASS] Starting method '%s()' in class '%s'\n", $2, current_class->name.c_str());
+              }
               
               // Register method BEFORE compound_statement so we can emit label
               std::vector<Type> empty_params;
               MethodSignature* method = register_method(current_class->name, pending_method_name,
-                                                        empty_params, pending_method_return_type);
+                                                        empty_params, pending_method_return_type, is_constructor);
               if (method) {
                   current_class->add_method(method);
                   
@@ -895,7 +1223,8 @@ class_member
                   // Reset return flag for new method
                   current_function_has_return = false;
                   
-                  if (debug) printf("[CLASS] Registered method '%s::%s' (no params)\n",
+                  if (debug) printf("[CLASS] Registered %s '%s::%s' (no params)\n",
+                                   is_constructor ? "constructor" : "method",
                                    current_class->name.c_str(), pending_method_name.c_str());
               }
               free($2);
@@ -909,10 +1238,11 @@ class_member
           
           // Check for missing return statements (same as function)
           if (current_method_signature && !current_function_has_return) {
-              if (current_function_return_type.base_type == TYPE_VOID) {
-                  // Emit implicit return for void methods
+              if (current_function_return_type.base_type == TYPE_VOID || current_method_signature->is_constructor) {
+                  // Emit implicit return for void methods and constructors
                   tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
-                  if(debug) printf("[Method] Added implicit return for void method '%s'\n", 
+                  if(debug) printf("[Method] Added implicit return for %s '%s'\n", 
+                                  current_method_signature->is_constructor ? "constructor" : "void method",
                                   current_method_signature->mangled_name.c_str());
               } else {
                   // Error for non-void methods without return
@@ -947,19 +1277,35 @@ class_member
               pending_method_name = $2;  // METHOD variable (not pending_function_name)
               pending_method_return_type = method_return_type_backup;  // METHOD variable
               pending_method_return_type.pointer_level = 0;
-              if (debug) printf("[CLASS] Starting method '%s(...)' in class '%s', return type=%s\n", 
-                               $2, current_class->name.c_str(), method_return_type_backup.to_string().c_str());
+              
+              // Check if this is a constructor - method name same as class name
+              bool is_constructor = (pending_method_name == current_class->name);
+              if (is_constructor) {
+                  // Constructor validation: should have void return type (implicitly)
+                  if (method_return_type_backup.base_type != TYPE_VOID) {
+                      fprintf(stderr, "[Semantic Error] Line %d: Constructor '%s' cannot have explicit return type\n",
+                              yylineno, pending_method_name.c_str());
+                      semantic_error_count++;
+                  }
+                  pending_method_return_type = Type(TYPE_VOID); // Force constructor to be void
+                  if (debug) printf("[CLASS] Starting constructor '%s(...)' in class '%s'\n", $2, current_class->name.c_str());
+              } else {
+                  if (debug) printf("[CLASS] Starting method '%s(...)' in class '%s', return type=%s\n", 
+                                   $2, current_class->name.c_str(), method_return_type_backup.to_string().c_str());
+              }
               free($2);
           }
       } parameter_type_list ')' {
           // Register method BEFORE compound_statement so we can emit label
           if (current_class) {
-              if (debug) printf("[CLASS] About to register method '%s::%s' with return type=%s, %d params\n",
+              bool is_constructor = (pending_method_name == current_class->name);
+              if (debug) printf("[CLASS] About to register %s '%s::%s' with return type=%s, %d params\n",
+                               is_constructor ? "constructor" : "method",
                                current_class->name.c_str(), pending_method_name.c_str(),
                                pending_method_return_type.to_string().c_str(),
                                (int)pending_method_param_types.size());
               MethodSignature* method = register_method(current_class->name, pending_method_name,
-                                                        pending_method_param_types, pending_method_return_type);
+                                                        pending_method_param_types, pending_method_return_type, is_constructor);
               if (method) {
                   current_class->add_method(method);
                   
@@ -976,7 +1322,8 @@ class_member
                   // Reset return flag for new method
                   current_function_has_return = false;
                   
-                  if (debug) printf("[CLASS] Registered method '%s::%s' with %d params\n",
+                  if (debug) printf("[CLASS] Registered %s '%s::%s' with %d params\n",
+                                   is_constructor ? "constructor" : "method",
                                    current_class->name.c_str(), pending_method_name.c_str(),
                                    (int)pending_method_param_types.size());
               }
@@ -990,10 +1337,11 @@ class_member
           
           // Check for missing return statements (same as function)
           if (current_method_signature && !current_function_has_return) {
-              if (current_function_return_type.base_type == TYPE_VOID) {
-                  // Emit implicit return for void methods
+              if (current_function_return_type.base_type == TYPE_VOID || current_method_signature->is_constructor) {
+                  // Emit implicit return for void methods and constructors
                   tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
-                  if(debug) printf("[Method] Added implicit return for void method '%s'\n", 
+                  if(debug) printf("[Method] Added implicit return for %s '%s'\n", 
+                                  current_method_signature->is_constructor ? "constructor" : "void method",
                                   current_method_signature->mangled_name.c_str());
               } else {
                   // Error for non-void methods without return
@@ -1033,8 +1381,20 @@ class_member
               
               // Register method BEFORE compound_statement
               std::vector<Type> empty_params;
+              // Check if this is a constructor
+              bool is_constructor = (pending_method_name == current_class->name);
+              if (is_constructor) {
+                  // Constructor validation: should have void return type (implicitly)
+                  if (pending_method_return_type.base_type != TYPE_VOID || pending_method_return_type.pointer_level != 0) {
+                      fprintf(stderr, "[Semantic Error] Line %d: Constructor '%s' cannot have explicit return type\n",
+                              yylineno, pending_method_name.c_str());
+                      semantic_error_count++;
+                  }
+                  pending_method_return_type = Type(TYPE_VOID); // Force constructor to be void
+              }
+
               MethodSignature* method = register_method(current_class->name, pending_method_name,
-                                                        empty_params, pending_method_return_type);
+                                                        empty_params, pending_method_return_type, is_constructor);
               if (method) {
                   current_class->add_method(method);
                   
@@ -1051,7 +1411,8 @@ class_member
                   // Reset return flag for new method
                   current_function_has_return = false;
                   
-                  if (debug) printf("[CLASS] Registered method '%s::%s' (ptr return, no params)\n",
+                  if (debug) printf("[CLASS] Registered %s '%s::%s' (ptr return, no params)\n",
+                                   is_constructor ? "constructor" : "method",
                                    current_class->name.c_str(), pending_method_name.c_str());
               }
               free($3);
@@ -1065,11 +1426,13 @@ class_member
           
           // Check for missing return statements (same as function)
           if (current_method_signature && !current_function_has_return) {
-              if (current_function_return_type.base_type == TYPE_VOID) {
-                  // Emit implicit return for void methods
+              if (current_function_return_type.base_type == TYPE_VOID || current_method_signature->is_constructor || current_method_signature->is_destructor) {
+                  // Emit implicit return for void methods, constructors, and destructors
                   tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
-                  if(debug) printf("[Method] Added implicit return for void method '%s'\n", 
-                                  current_method_signature->mangled_name.c_str());
+                  const char* method_type = current_method_signature->is_constructor ? "constructor" : 
+                                           (current_method_signature->is_destructor ? "destructor" : "void method");
+                  if(debug) printf("[Method] Added implicit return for %s '%s'\n", 
+                                  method_type, current_method_signature->mangled_name.c_str());
               } else {
                   // Error for non-void methods without return
                   fprintf(stderr, "[Semantic Error] Line %d: Method '%s::%s' with non-void return type must have a return statement\n", 
@@ -1108,11 +1471,24 @@ class_member
       } parameter_type_list ')' {
           // Register method BEFORE compound_statement
           if (current_class) {
-              if (debug) printf("[CLASS] About to register method '%s::%s' (ptr return) with %d params\n",
+              // Check if this is a constructor
+              bool is_constructor = (pending_method_name == current_class->name);
+              if (is_constructor) {
+                  // Constructor validation: should have void return type (implicitly)
+                  if (pending_method_return_type.base_type != TYPE_VOID || pending_method_return_type.pointer_level != 0) {
+                      fprintf(stderr, "[Semantic Error] Line %d: Constructor '%s' cannot have explicit return type\n",
+                              yylineno, pending_method_name.c_str());
+                      semantic_error_count++;
+                  }
+                  pending_method_return_type = Type(TYPE_VOID); // Force constructor to be void
+              }
+
+              if (debug) printf("[CLASS] About to register %s '%s::%s' (ptr return) with %d params\n",
+                               is_constructor ? "constructor" : "method",
                                current_class->name.c_str(), pending_method_name.c_str(),
                                (int)pending_method_param_types.size());
               MethodSignature* method = register_method(current_class->name, pending_method_name,
-                                                        pending_method_param_types, pending_method_return_type);
+                                                        pending_method_param_types, pending_method_return_type, is_constructor);
               if (method) {
                   current_class->add_method(method);
                   
@@ -1129,7 +1505,8 @@ class_member
                   // Reset return flag for new method
                   current_function_has_return = false;
                   
-                  if (debug) printf("[CLASS] Registered method '%s::%s' (ptr return, %d params)\n",
+                  if (debug) printf("[CLASS] Registered %s '%s::%s' (ptr return, %d params)\n",
+                                   is_constructor ? "constructor" : "method",
                                    current_class->name.c_str(), pending_method_name.c_str(),
                                    (int)pending_method_param_types.size());
               }
@@ -1143,11 +1520,13 @@ class_member
           
           // Check for missing return statements (same as function)
           if (current_method_signature && !current_function_has_return) {
-              if (current_function_return_type.base_type == TYPE_VOID) {
-                  // Emit implicit return for void methods
+              if (current_function_return_type.base_type == TYPE_VOID || current_method_signature->is_constructor || current_method_signature->is_destructor) {
+                  // Emit implicit return for void methods, constructors, and destructors
                   tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
-                  if(debug) printf("[Method] Added implicit return for void method '%s'\n", 
-                                  current_method_signature->mangled_name.c_str());
+                  const char* method_type = current_method_signature->is_constructor ? "constructor" : 
+                                           (current_method_signature->is_destructor ? "destructor" : "void method");
+                  if(debug) printf("[Method] Added implicit return for %s '%s'\n", 
+                                  method_type, current_method_signature->mangled_name.c_str());
               } else {
                   // Error for non-void methods without return
                   fprintf(stderr, "[Semantic Error] Line %d: Method '%s::%s' with non-void return type must have a return statement\n", 
@@ -2000,6 +2379,8 @@ function_definition
                     semantic_error_count++;
                 }
             }
+            // Always add a final return TAC as a safety net
+            tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
             
             tacGen.finalize_labels();
 
@@ -2055,6 +2436,8 @@ function_definition
                     semantic_error_count++;
                 }
             }
+            // Always add a final return TAC as a safety net
+            tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
             
             tacGen.finalize_labels();
 
@@ -2103,6 +2486,8 @@ function_definition
                     semantic_error_count++;
                 }
             }
+            // Always add a final return TAC as a safety net
+            tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
 
             tacGen.finalize_labels();
             
@@ -2151,6 +2536,8 @@ function_definition
                     semantic_error_count++;
                 }
             }
+            // Always add a final return TAC as a safety net
+            tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
             
             tacGen.finalize_labels();
 
@@ -2204,7 +2591,7 @@ int main(int argc, char *argv[]) {
     int parse_ok = (yyparse() == 0);
 
     if (parse_ok && semantic_error_count == 0) {
-        printf("\n✓ Parsing successful!\n");
+        printf("\nâœ“ Parsing successful!\n");
         // Always print global symbol table before TAC generation
         if (SymbolTable* gst = get_global_symbol_table()) {
             printf("\n[Global Symbol Table]\n");
@@ -2221,9 +2608,9 @@ int main(int argc, char *argv[]) {
         return 0;
     } else {
         if (semantic_error_count > 0) {
-            fprintf(stderr, "\n✗ Semantic errors: %d\n", semantic_error_count);
+            fprintf(stderr, "\nâœ— Semantic errors: %d\n", semantic_error_count);
         }
-        printf("\n✗ Parsing failed!\n");
+        printf("\nâœ— Parsing failed!\n");
         return 1;
     }
 }

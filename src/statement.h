@@ -8,6 +8,7 @@
 
 // Forward declaration for Declaration
 class Declaration;
+class Symbol; // forward declare Symbol for destructor tracking API
 
 // ============================================================================
 // Statement Nodes - Control Flow
@@ -416,6 +417,8 @@ class CompoundStatement : public Statement
 {
 public:
     std::vector<Statement *> statements; // List of statements in block
+    // Track constructed local objects (in construction order) for RAII teardown
+    std::vector<Symbol*> constructed_locals;
 
     CompoundStatement();
     virtual ~CompoundStatement();
@@ -430,6 +433,8 @@ public:
  *
  * Syntax: case CONSTANT: statement
  *
+void register_constructed_local(Symbol* sym);
+
  * This is a wrapper that:
  * - Validates the case value is a constant integer/char
  * - Records the case value and the position in TAC
@@ -590,5 +595,9 @@ SwitchStatement *create_switch_statement(Expression *expr, Statement *body);
 ReturnStatement *create_return_statement(Expression *expr = nullptr);
 GotoStatement *create_goto_statement(const std::string &label);
 LabelStatement *create_label_statement(const std::string &label, Statement *stmt);
+
+// Destructor tracking helpers (implemented in statement.cpp)
+// Called by VariableDeclaration codegen when a class object is constructed
+void register_constructed_local(Symbol* sym);
 
 #endif // STATEMENT_H

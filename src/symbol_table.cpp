@@ -1184,14 +1184,57 @@ void print_function_signatures()
 // ===================== Method Registry =====================
 
 MethodSignature *register_method(const std::string &class_name, const std::string &method_name,
-                                  const std::vector<Type> &params, const Type &retType)
+                                  const std::vector<Type> &params, const Type &retType, 
+                                  bool is_constructor, bool is_destructor)
 {
+    // Constructor/Destructor validation
+    if (is_constructor) {
+        // Constructor must have same name as class and void return type
+        if (method_name != class_name) {
+            cerr << "[Semantic Error] Constructor name '" << method_name << "' must match class name '" << class_name << "'\n";
+            semantic_error_count++;
+            return nullptr;
+        }
+        if (retType.base_type != TYPE_VOID) {
+            cerr << "[Semantic Error] Constructor '" << class_name << "::" << method_name << "' must have void return type\n";
+            semantic_error_count++;
+            return nullptr;
+        }
+    }
+    
+    if (is_destructor) {
+        // Destructor must have ~ClassName name, no parameters, and void return type
+        if (method_name != ("~" + class_name)) {
+            cerr << "[Semantic Error] Destructor name '" << method_name << "' must be '~" << class_name << "'\n";
+            semantic_error_count++;
+            return nullptr;
+        }
+        if (!params.empty()) {
+            cerr << "[Semantic Error] Destructor '" << class_name << "::" << method_name << "' cannot have parameters\n";
+            semantic_error_count++;
+            return nullptr;
+        }
+        if (retType.base_type != TYPE_VOID) {
+            cerr << "[Semantic Error] Destructor '" << class_name << "::" << method_name << "' must have void return type\n";
+            semantic_error_count++;
+            return nullptr;
+        }
+    }
+    
     // Check if method with same signature already exists in this class
     MethodSignature *existing = find_method_match(class_name, method_name, params);
     if (existing)
     {
         cerr << "[Semantic Error] Redeclaration of method '" << class_name << "::" << method_name
              << "' with same parameter types\n";
+        semantic_error_count++;
+        return nullptr;
+    }
+
+    // Validation: No regular method should have the same name as class (only constructors allowed)
+    if (!is_constructor && method_name == class_name) {
+        cerr << "[Semantic Error] Method '" << class_name << "::" << method_name 
+             << "' cannot have same name as class (only constructors allowed)\n";
         semantic_error_count++;
         return nullptr;
     }
@@ -1213,6 +1256,8 @@ MethodSignature *register_method(const std::string &class_name, const std::strin
     new_method.params = params;
     new_method.returnType = retType;
     new_method.MethodID = max_id;
+    new_method.is_constructor = is_constructor;
+    new_method.is_destructor = is_destructor;
     
     // Generate mangled name for TAC
     new_method.mangled_name = mangle_method_for_tac(class_name, method_name, new_method);
@@ -1220,10 +1265,11 @@ MethodSignature *register_method(const std::string &class_name, const std::strin
     // Add to global registry
     method_signatures.push_back(new_method);
     
+    const char* method_type = is_constructor ? "constructor" : (is_destructor ? "destructor" : "method");
     if (debug)
     {
-        printf("[Method Registry] Registered method '%s::%s' with ID %d, mangled as '%s'\n",
-               class_name.c_str(), method_name.c_str(), max_id, new_method.mangled_name.c_str());
+        printf("[Method Registry] Registered %s '%s::%s' with ID %d, mangled as '%s'\n",
+               method_type, class_name.c_str(), method_name.c_str(), max_id, new_method.mangled_name.c_str());
     }
     
     return &method_signatures.back();
@@ -1276,8 +1322,9 @@ void print_method_signatures()
     cout << left << setw(20) << "Class::Method"
          << setw(30) << "Parameter Types"
          << setw(15) << "Return Type"
+         << setw(12) << "Type"
          << setw(15) << "Mangled Name" << endl;
-    cout << "-------------------------------------------------------------------------\n";
+    cout << "------------------------------------------------------------------------------------\n";
 
     for (const auto &ms : method_signatures)
     {
@@ -1296,10 +1343,17 @@ void print_method_signatures()
         cout << setw(30) << paramStr;
 
         cout << setw(15) << ms.returnType.to_string();
+        
+        // Method type
+        string methodType = "method";
+        if (ms.is_constructor) methodType = "constructor";
+        else if (ms.is_destructor) methodType = "destructor";
+        cout << setw(12) << methodType;
+        
         cout << setw(15) << ms.mangled_name << endl;
     }
 
-    cout << "-------------------------------------------------------------------------\n" << endl;
+    cout << "------------------------------------------------------------------------------------\n" << endl;
 }
 
 void SymbolTable::print() const
