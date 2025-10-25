@@ -50,6 +50,7 @@ int get_enum_member_value(const std::string &identifier);
 // Forward Declarations
 // ============================================================================
 class Type; // Forward declaration for StructType
+struct MethodSignature; // Forward declaration for ClassType
 
 // ============================================================================
 // Struct/Union Type Support
@@ -89,6 +90,51 @@ bool struct_exists_in_current_scope(const std::string &struct_name);
 extern StructType *current_struct;
 
 // ============================================================================
+// Class Type Support
+// ============================================================================
+
+class ClassType
+{
+public:
+    std::string name;                                    // Name of the class (e.g., "Point")
+    std::vector<std::pair<std::string, Type *>> members; // Ordered list of data members (name, type)
+    std::unordered_map<std::string, int> member_offsets; // member_name -> byte offset
+    int total_size;                                      // Total size in bytes
+    
+    // Method support
+    std::vector<MethodSignature *> methods;              // List of methods in this class
+    
+    ClassType(const std::string &n) : name(n), total_size(0) {}
+    ~ClassType()
+    {
+        for (auto &member : members)
+        {
+            delete member.second;
+        }
+        // Note: methods are managed by global method_signatures vector
+    }
+
+    void add_member(const std::string &member_name, Type *member_type);
+    int get_member_offset(const std::string &member_name) const;
+    Type *get_member_type(const std::string &member_name) const;
+    bool has_member(const std::string &member_name) const;
+    void finalize(); // Calculate offsets and total size (sequential layout)
+    
+    // Method management
+    void add_method(MethodSignature *method);
+    bool has_method(const std::string &method_name) const;
+    std::vector<MethodSignature *> get_methods(const std::string &method_name) const; // For overloading
+};
+
+// Helper functions for scope-aware class management
+void register_class_in_scope(const std::string &class_name, ClassType *class_type);
+ClassType *lookup_class_in_scope(const std::string &class_name);
+bool class_exists_in_current_scope(const std::string &class_name);
+
+// Track current class being parsed
+extern ClassType *current_class;
+
+// ============================================================================
 // Type System
 // ============================================================================
 
@@ -106,14 +152,22 @@ public:
 
     // Struct support
     bool is_struct;              // true if this is a struct type
+    bool is_union;               // true if this is a union type
     std::string struct_name;     // name of the struct (e.g., "Node")
     StructType *struct_type_ptr; // Direct pointer to the StructType (for scope-aware access)
 
+    // Class support
+    bool is_class;               // true if this is a class type
+    std::string class_name;      // name of the class (e.g., "Point")
+    ClassType *class_type_ptr;   // Direct pointer to the ClassType (for scope-aware access)
+
     Type() : base_type(TYPE_ERROR), pointer_level(0), is_const(false),
-             is_array(false), array_dim(0), is_struct(false), struct_type_ptr(nullptr) {}
+                         is_array(false), array_dim(0), is_struct(false), is_union(false), struct_type_ptr(nullptr),
+                         is_class(false), class_type_ptr(nullptr) {}
     Type(PrimitiveType bt, int ptr = 0, bool c = false)
         : base_type(bt), pointer_level(ptr), is_const(c),
-          is_array(false), array_dim(0), is_struct(false), struct_type_ptr(nullptr) {}
+                    is_array(false), array_dim(0), is_struct(false), is_union(false), struct_type_ptr(nullptr),
+                    is_class(false), class_type_ptr(nullptr) {}
 
     std::string to_string() const;
     int get_size() const;         // Size in bytes for a single element
@@ -157,6 +211,9 @@ private:
     // Struct types for this scope
     std::unordered_map<std::string, StructType *> struct_types;
 
+    // Class types for this scope
+    std::unordered_map<std::string, ClassType *> class_types;
+
 public:
     int Scopelevel;   // scope level of SymbolTable
     int scopeCounter; // Monotonically increasing scope ID (never reused)
@@ -177,6 +234,10 @@ public:
     // Struct operations (scope-local)
     bool register_struct(const std::string &name, StructType *st);
     StructType *lookup_struct_local(const std::string &name);
+
+    // Class operations (scope-local)
+    bool register_class(const std::string &name, ClassType *ct);
+    ClassType *lookup_class_local(const std::string &name);
 
     // Utilities
     void print() const;
@@ -232,23 +293,52 @@ struct FunctionSignature
     SymbolTable *static_table;
 };
 
+// ===================== Method Registry (for class methods) =====================
+struct MethodSignature
+{
+    std::string class_name;   // Name of the class this method belongs to
+    std::string method_name;  // Name of the method
+    std::vector<Type> params; // parameter types (excluding implicit 'this' pointer)
+    Type returnType;          // method return type
+    int MethodID;             // unique method ID for overloading
+    
+    // Mangled name for TAC generation (includes class name + method name + signature)
+    std::string mangled_name;
+};
+
 // magle functionID for TAC
 
 std::string mangle_function_for_tac(const std::string &name, const FunctionSignature &fs);
+std::string mangle_method_for_tac(const std::string &class_name, const std::string &method_name, const MethodSignature &ms);
 
 // Global list of declared function signatures
 extern std::vector<FunctionSignature> function_signatures;
 
+// Global list of declared method signatures
+extern std::vector<MethodSignature> method_signatures;
+
 // Current function being processed (for static variable handling)
 extern FunctionSignature *current_function_signature;
+
+// Current method being processed
+extern MethodSignature *current_method_signature;
 
 // Register a function (name + params + return type)
 FunctionSignature *register_function(const std::string &name, const std::vector<Type> &params, const Type &retType);
 
+// Register a method (class_name + method_name + params + return type)
+MethodSignature *register_method(const std::string &class_name, const std::string &method_name, 
+                                  const std::vector<Type> &params, const Type &retType);
+
 // Find function by name and arg type list; returns index or -1
 int find_function_match(const std::string &name, const std::vector<Type> &argTypes);
 
+// Find method by class name, method name, and arg type list; returns pointer or nullptr
+MethodSignature *find_method_match(const std::string &class_name, const std::string &method_name, 
+                                     const std::vector<Type> &argTypes);
+
 void print_function_signatures();
+void print_method_signatures();
 
 // Function static variable management
 void set_current_function(FunctionSignature *func);

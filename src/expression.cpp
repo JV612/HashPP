@@ -143,6 +143,57 @@ void PrimaryExpression::generate_tac()
             break;
         }
 
+        // Check if we're inside a method and this might be a member access
+        if (current_method_signature != nullptr)
+        {
+            // Look up the class this method belongs to
+            ClassType* class_type = lookup_class_in_scope(current_method_signature->class_name);
+            if (class_type)
+            {
+                // Check if this identifier is a class member
+                bool is_member = false;
+                Type member_type;
+                size_t member_offset = 0;
+                
+                for (size_t i = 0; i < class_type->members.size(); i++)
+                {
+                    if (class_type->members[i].first == name)
+                    {
+                        is_member = true;
+                        member_type = *(class_type->members[i].second);
+                        member_offset = class_type->member_offsets[class_type->members[i].first];
+                        break;
+                    }
+                }
+                
+                if (is_member)
+                {
+                    // Access member via implicit 'this' pointer (param_0)
+                    // Generate: temp = *(param_0 + offset)
+                    TACOperand this_ptr(TACOperand::OPERAND_IDENTIFIER, "param_0");
+                    TACOperand offset_operand(TACOperand::OPERAND_CONSTANT, std::to_string(member_offset));
+                    
+                    // Calculate address: this + offset
+                    TACOperand addr_temp = tacGen.newTemp();
+                    tacGen.emit(TAC_ADD, addr_temp, this_ptr, offset_operand);
+                    
+                    // Dereference to get member value
+                    TACOperand member_temp = tacGen.newTemp();
+                    tacGen.emit(TAC_DEREF, member_temp, addr_temp, TACOperand());
+                    
+                    result = new TACOperand(member_temp);
+                    type = new Type(member_type);
+                    
+                    if (debug)
+                    {
+                        cout << "[AST] Member access via 'this': " << name 
+                             << " (offset " << member_offset << ")" << endl;
+                    }
+                    break;
+                }
+            }
+        }
+
         // Otherwise, normal identifier lookup
         // Use cached symbol from construction time (correct scope)
         Symbol *sym = symbol_ref;
@@ -1372,6 +1423,13 @@ AssignmentExpression::AssignmentExpression(const string &var, Expression *rhs_ex
 {
     // Look up LHS symbol during construction (while in correct scope)
     lhs_symbol = lookup_symbol(var);
+    
+    // If not found as local variable and we're inside a method, it might be a member
+    if (!lhs_symbol && current_method_signature != nullptr)
+    {
+        // We'll handle this as member access in generate_tac
+        // Don't report error here
+    }
 }
 
 AssignmentExpression::~AssignmentExpression()
@@ -1410,9 +1468,34 @@ void AssignmentExpression::generate_tac()
         return;
     }
 
+    // Check if we're inside a method and LHS might be a member access
+    bool is_member_assignment = false;
+    Type member_type;
+    size_t member_offset = 0;
+    
+    if (!lhs_symbol && current_method_signature != nullptr)
+    {
+        // Look up the class this method belongs to
+        ClassType* class_type = lookup_class_in_scope(current_method_signature->class_name);
+        if (class_type)
+        {
+            // Check if this identifier is a class member
+            for (size_t i = 0; i < class_type->members.size(); i++)
+            {
+                if (class_type->members[i].first == lhs_name)
+                {
+                    is_member_assignment = true;
+                    member_type = *(class_type->members[i].second);
+                    member_offset = class_type->member_offsets[class_type->members[i].first];
+                    break;
+                }
+            }
+        }
+    }
+    
     // Look up LHS variable in symbol table (use cached symbol from construction)
     Symbol *sym = lhs_symbol;
-    if (!sym)
+    if (!sym && !is_member_assignment)
     {
         fprintf(stderr, "[Type Error] Line %d: Undefined variable '%s'\n",
                 line_no, lhs_name.c_str());
@@ -1421,23 +1504,26 @@ void AssignmentExpression::generate_tac()
         return;
     }
 
+    // For member assignment, use member_type; for normal assignment, use sym->type
+    Type lhs_type = is_member_assignment ? member_type : sym->type;
+
     // Check type compatibility with full pointer/array checking
     bool compatible = false;
 
     // First check: exact type match (including pointer levels and array status)
-    if (sym->type.base_type == rhs->type->base_type &&
-        sym->type.pointer_level == rhs->type->pointer_level &&
-        sym->type.is_array == rhs->type->is_array)
+    if (lhs_type.base_type == rhs->type->base_type &&
+        lhs_type.pointer_level == rhs->type->pointer_level &&
+        lhs_type.is_array == rhs->type->is_array)
     {
         // For struct types, also check that struct names match
-        if (sym->type.is_struct && rhs->type->is_struct)
+        if (lhs_type.is_struct && rhs->type->is_struct)
         {
-            if (sym->type.struct_name == rhs->type->struct_name)
+            if (lhs_type.struct_name == rhs->type->struct_name && lhs_type.is_union == rhs->type->is_union)
             {
                 compatible = true;
             }
         }
-        else if (!sym->type.is_struct && !rhs->type->is_struct)
+        else if (!lhs_type.is_struct && !rhs->type->is_struct)
         {
             // Non-struct types match
             compatible = true;
@@ -1447,43 +1533,43 @@ void AssignmentExpression::generate_tac()
     // Second check: array-to-pointer decay
     // An array T[] can be assigned to a pointer T*
     else if (rhs->type->is_array &&
-             sym->type.pointer_level == 1 &&
-             !sym->type.is_array &&
-             sym->type.base_type == rhs->type->base_type)
+             lhs_type.pointer_level == 1 &&
+             !lhs_type.is_array &&
+             lhs_type.base_type == rhs->type->base_type)
     {
         compatible = true;
         // Array automatically decays to pointer to first element
     }
     // Null constant check: null can be assigned to any pointer type
-    else if (sym->type.pointer_level > 0 &&
+    else if (lhs_type.pointer_level > 0 &&
              rhs->type->base_type == TYPE_VOID && rhs->type->pointer_level == 1)
     {
         // Allow null constants to be assigned to any pointer type
         compatible = true;
     }
     // Third check: numeric type conversions (only for non-pointer types)
-    else if (sym->type.pointer_level == 0 && rhs->type->pointer_level == 0 &&
-             !sym->type.is_array && !rhs->type->is_array &&
-             sym->type.is_numeric() && rhs->type->is_numeric())
+    else if (lhs_type.pointer_level == 0 && rhs->type->pointer_level == 0 &&
+             !lhs_type.is_array && !rhs->type->is_array &&
+             lhs_type.is_numeric() && rhs->type->is_numeric())
     {
         // Allow implicit numeric conversions but warn
         compatible = true;
         fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in assignment from %s to %s\n",
-                line_no, rhs->type->to_string().c_str(), sym->type.to_string().c_str());
+                line_no, rhs->type->to_string().c_str(), lhs_type.to_string().c_str());
     }
 
     // If not compatible, it's an error
     if (!compatible)
     {
         fprintf(stderr, "[Type Error] Line %d: Cannot assign %s to %s\n",
-                line_no, rhs->type->to_string().c_str(), sym->type.to_string().c_str());
+                line_no, rhs->type->to_string().c_str(), lhs_type.to_string().c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
     }
 
     // Assignment type is the LHS type
-    type = new Type(sym->type);
+    type = new Type(lhs_type);
 
     // ========================================================================
     // TAC Generation (only if types are valid)
@@ -1492,16 +1578,43 @@ void AssignmentExpression::generate_tac()
     // Copy code from RHS
     code = rhs->code;
 
-    // Create operand for LHS with mangled name: varname_scope
-    string mangled_lhs = mangle_for_tac(lhs_name, sym);
-    TACOperand lhs(TACOperand::OPERAND_IDENTIFIER, mangled_lhs);
+    if (is_member_assignment)
+    {
+        // Generate TAC for member assignment: *(this + offset) = rhs
+        // 1. Calculate member address: this + offset
+        TACOperand this_ptr(TACOperand::OPERAND_IDENTIFIER, "param_0");
+        TACOperand offset_operand(TACOperand::OPERAND_CONSTANT, std::to_string(member_offset));
+        TACOperand addr_temp = tacGen.newTemp();
+        tacGen.emit(TAC_ADD, addr_temp, this_ptr, offset_operand);
+        code.push_back(tacGen.getCode().back());
+        
+        // 2. Store value at address: *addr = rhs
+        tacGen.emit(TAC_DEREF_STORE, addr_temp, *rhs->result, TACOperand());
+        code.push_back(tacGen.getCode().back());
+        
+        // Result is the address (for chained assignments)
+        result = new TACOperand(addr_temp);
+        
+        if (debug)
+        {
+            cout << "[AST] Member assignment via 'this': " << lhs_name 
+                 << " (offset " << member_offset << ")" << endl;
+        }
+    }
+    else
+    {
+        // Normal variable assignment
+        // Create operand for LHS with mangled name: varname_scope
+        string mangled_lhs = mangle_for_tac(lhs_name, sym);
+        TACOperand lhs(TACOperand::OPERAND_IDENTIFIER, mangled_lhs);
 
-    // Emit assignment
-    tacGen.emit(TAC_ASSIGN, lhs, *rhs->result);
-    code.push_back(tacGen.getCode().back());
+        // Emit assignment
+        tacGen.emit(TAC_ASSIGN, lhs, *rhs->result);
+        code.push_back(tacGen.getCode().back());
 
-    // Result is the LHS
-    result = new TACOperand(lhs);
+        // Result is the LHS
+        result = new TACOperand(lhs);
+    }
 }
 
 // ============================================================================
@@ -1665,7 +1778,7 @@ void GeneralAssignmentExpression::generate_tac()
             // For struct types, also check struct names match
             if (lhs->type->is_struct && rhs->type->is_struct)
             {
-                if (lhs->type->struct_name == rhs->type->struct_name)
+                if (lhs->type->struct_name == rhs->type->struct_name && lhs->type->is_union == rhs->type->is_union && lhs->type->is_class == rhs->type->is_class)
                 {
                     compatible = true;
                 }
@@ -1736,7 +1849,7 @@ void GeneralAssignmentExpression::generate_tac()
             // For struct types, also check struct names match
             if (lhs->type->is_struct && rhs->type->is_struct)
             {
-                if (lhs->type->struct_name == rhs->type->struct_name)
+                if (lhs->type->struct_name == rhs->type->struct_name && lhs->type->is_union == rhs->type->is_union && lhs->type->is_class == rhs->type->is_class)
                 {
                     compatible = true;
                 }
@@ -1823,7 +1936,7 @@ void GeneralAssignmentExpression::generate_tac()
             // For struct types, also check struct names match
             if (lhs->type->is_struct && rhs->type->is_struct)
             {
-                if (lhs->type->struct_name == rhs->type->struct_name)
+                if (lhs->type->struct_name == rhs->type->struct_name && lhs->type->is_union == rhs->type->is_union && lhs->type->is_class == rhs->type->is_class)
                 {
                     compatible = true;
                 }
@@ -1912,7 +2025,7 @@ void GeneralAssignmentExpression::generate_tac()
             // For struct types, also check struct names match
             if (lhs->type->is_struct && rhs->type->is_struct)
             {
-                if (lhs->type->struct_name == rhs->type->struct_name)
+                if (lhs->type->struct_name == rhs->type->struct_name && lhs->type->is_union == rhs->type->is_union && lhs->type->is_class == rhs->type->is_class)
                 {
                     compatible = true;
                 }
@@ -2254,6 +2367,152 @@ CallExpression *create_call_expression(const std::string &name, const std::vecto
     return new CallExpression(name, args);
 }
 
+// ============================================================================
+// METHOD CALL EXPRESSIONS - object.method(args)
+// ============================================================================
+
+void MethodCallExpression::generate_tac()
+{
+    code.clear();
+    
+    // 1. Generate TAC for object expression to get its address/value
+    object->generate_tac();
+    code.insert(code.end(), object->code.begin(), object->code.end());
+    
+    // 2. Determine the class type of the object
+    if (!object->type)
+    {
+        fprintf(stderr, "[Type Error] Line %d: Object has no type information for method call '%s'\n", 
+                line_no, method_name.c_str());
+        semantic_error_count++;
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+    
+    if (object->type->is_error())
+    {
+        // Error already reported, propagate error type
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+    
+    if (!object->type->is_class)
+    {
+        fprintf(stderr, "[Type Error] Line %d: Cannot call method '%s' on non-class type '%s'\n", 
+                line_no, method_name.c_str(), object->type->to_string().c_str());
+        semantic_error_count++;
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+    
+    std::string class_name = object->type->class_name;
+    
+    // 3. Evaluate arguments and collect their types
+    std::vector<Type> argTypes;
+    argTypes.reserve(args.size());
+    bool has_error_args = false;
+    
+    for (auto *e : args)
+    {
+        e->generate_tac();
+        code.insert(code.end(), e->code.begin(), e->code.end());
+        if (e->type)
+        {
+            argTypes.push_back(*e->type);
+            if (e->type->is_error())
+                has_error_args = true;
+        }
+        else
+        {
+            argTypes.push_back(Type(TYPE_ERROR));
+            has_error_args = true;
+        }
+    }
+    
+    // If any argument has an error, propagate error (don't try to match)
+    if (has_error_args)
+    {
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+    
+    // 4. Find matching method using overload resolution
+    MethodSignature *method = find_method_match(class_name, method_name, argTypes);
+    if (!method)
+    {
+        // Build argument type string for better error message
+        std::string argTypeStr;
+        for (size_t i = 0; i < argTypes.size(); ++i)
+        {
+            argTypeStr += argTypes[i].to_string();
+            if (i < argTypes.size() - 1)
+                argTypeStr += ", ";
+        }
+        if (argTypes.empty())
+            argTypeStr = "void";
+        
+        fprintf(stderr, "[Type Error] Line %d: No matching method '%s::%s(%s)'\n",
+                line_no, class_name.c_str(), method_name.c_str(), argTypeStr.c_str());
+        semantic_error_count++;
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+    
+    // 5. Type checking passed - emit TAC
+    
+    // First parameter is address of object (this pointer)
+    TACOperand object_addr = tacGen.newTemp();
+    tacGen.emit(TAC_ADDR_OF, object_addr, *object->result, TACOperand());
+    code.push_back(tacGen.getCode().back());
+    
+    tacGen.emit(TAC_PARAM, TACOperand(), object_addr);
+    code.push_back(tacGen.getCode().back());
+    
+    // Emit parameters for user arguments
+    for (auto *e : args)
+    {
+        tacGen.emit(TAC_PARAM, TACOperand(), *e->result);
+        code.push_back(tacGen.getCode().back());
+    }
+    
+    // Emit call to mangled method name
+    TACOperand methodOp(TACOperand::OPERAND_LABEL, method->mangled_name);
+    TACOperand nParams(TACOperand::OPERAND_CONSTANT, std::to_string(args.size() + 1)); // +1 for 'this'
+    
+    // Set return type and emit call
+    if (method->returnType.base_type != TYPE_VOID)
+    {
+        TACOperand temp = tacGen.newTemp();
+        result = new TACOperand(temp);
+        tacGen.emit(TAC_CALL, *result, methodOp, nParams);
+        code.push_back(tacGen.getCode().back());
+        type = new Type(method->returnType);
+    }
+    else
+    {
+        result = new TACOperand();
+        tacGen.emit(TAC_CALL, TACOperand(), methodOp, nParams);
+        code.push_back(tacGen.getCode().back());
+        type = new Type(TYPE_VOID);
+    }
+    
+    if (debug)
+    {
+        cout << "[AST] Method call: " << class_name << "::" << method_name 
+             << " -> " << method->mangled_name << endl;
+    }
+}
+
+MethodCallExpression *create_method_call_expression(Expression *object, const char *method_name, const std::vector<Expression *> *args)
+{
+    std::vector<Expression *> arg_vec;
+    if (args)
+    {
+        arg_vec = *args;
+    }
+    return new MethodCallExpression(object, std::string(method_name), arg_vec);
+}
+
 PostfixExpression *create_postfix_expression(TACOp op, Expression *expr)
 {
     return new PostfixExpression(op, expr);
@@ -2282,14 +2541,14 @@ void MemberAccessExpression::generate_tac()
 {
     code.clear();
 
-    // Generate code for the struct expression
+    // Generate code for the struct/class expression
     struct_expr->generate_tac();
     code.insert(code.end(), struct_expr->code.begin(), struct_expr->code.end());
 
-    // Check if the expression is a struct type
-    if (!struct_expr->type || (!struct_expr->type->is_struct && struct_expr->type->pointer_level == 0))
+    // Check if the expression is a struct or class type
+    if (!struct_expr->type || ((!struct_expr->type->is_struct && !struct_expr->type->is_class) && struct_expr->type->pointer_level == 0))
     {
-        fprintf(stderr, "[Type Error] Line %d: Member access requires a struct type, got '%s'\n",
+        fprintf(stderr, "[Type Error] Line %d: Member access requires a struct or class type, got '%s'\n",
                 line_no, struct_expr->type ? struct_expr->type->to_string().c_str() : "unknown");
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
@@ -2297,6 +2556,74 @@ void MemberAccessExpression::generate_tac()
         return;
     }
 
+    // Handle class member access
+    if (struct_expr->type->is_class)
+    {
+        // Lookup class type - prefer using the direct pointer if available
+        ClassType *ct = struct_expr->type->class_type_ptr;
+        if (!ct)
+        {
+            // Fallback to scope-based lookup
+            ct = lookup_class_in_scope(struct_expr->type->class_name);
+        }
+        if (!ct)
+        {
+            fprintf(stderr, "[Type Error] Line %d: Class type '%s' not found\n",
+                    line_no, struct_expr->type->class_name.c_str());
+            semantic_error_count++;
+            type = new Type(TYPE_ERROR);
+            result = new TACOperand();
+            return;
+        }
+
+        // Check if member exists
+        if (!ct->has_member(member_name))
+        {
+            fprintf(stderr, "[Type Error] Line %d: Class '%s' has no member named '%s'\n",
+                    line_no, ct->name.c_str(), member_name.c_str());
+            semantic_error_count++;
+            type = new Type(TYPE_ERROR);
+            result = new TACOperand();
+            return;
+        }
+
+        // Get member offset and type
+        int offset = ct->get_member_offset(member_name);
+        Type *member_type = ct->get_member_type(member_name);
+
+        // Generate TAC: compute address of member
+        TACOperand offset_op(TACOperand::OPERAND_CONSTANT, std::to_string(offset));
+        TACOperand addr_temp = tacGen.newTemp();
+
+        // If struct_expr is a simple identifier, use address-of
+        PrimaryExpression *prim = dynamic_cast<PrimaryExpression *>(struct_expr);
+        if (prim && prim->prim_type == PrimaryExpression::PRIM_IDENTIFIER)
+        {
+            TACOperand struct_addr = tacGen.newTemp();
+            tacGen.emit(TAC_ADDR_OF, struct_addr, *struct_expr->result);
+            code.push_back(tacGen.getCode().back());
+
+            tacGen.emit(TAC_ADD, addr_temp, struct_addr, offset_op);
+            code.push_back(tacGen.getCode().back());
+        }
+        else
+        {
+            // For complex expressions, assume result is already an address
+            tacGen.emit(TAC_ADD, addr_temp, *struct_expr->result, offset_op);
+            code.push_back(tacGen.getCode().back());
+        }
+
+        // Load value from member address
+        result = new TACOperand(tacGen.newTemp());
+        tacGen.emit(TAC_DEREF, *result, addr_temp);
+        code.push_back(tacGen.getCode().back());
+
+        // Set type to member type
+        type = new Type(*member_type);
+        return;
+    }
+
+    // Handle struct member access (original code)
     // Lookup struct type - prefer using the direct pointer if available
     StructType *st = struct_expr->type->struct_type_ptr;
     if (!st)
@@ -2384,10 +2711,10 @@ void MemberAccessPtrExpression::generate_tac()
     ptr_expr->generate_tac();
     code.insert(code.end(), ptr_expr->code.begin(), ptr_expr->code.end());
 
-    // Check if the expression is a pointer to struct
-    if (!ptr_expr->type || !ptr_expr->type->is_struct || ptr_expr->type->pointer_level == 0)
+    // Check if the expression is a pointer to struct or class
+    if (!ptr_expr->type || ((!ptr_expr->type->is_struct && !ptr_expr->type->is_class) || ptr_expr->type->pointer_level == 0))
     {
-        fprintf(stderr, "[Type Error] Line %d: Pointer member access requires a pointer to struct, got '%s'\n",
+        fprintf(stderr, "[Type Error] Line %d: Pointer member access requires a pointer to struct or class, got '%s'\n",
                 line_no, ptr_expr->type ? ptr_expr->type->to_string().c_str() : "unknown");
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
@@ -2395,6 +2722,63 @@ void MemberAccessPtrExpression::generate_tac()
         return;
     }
 
+    // Handle class pointer member access
+    if (ptr_expr->type->is_class)
+    {
+        // Lookup class type - prefer using the direct pointer if available
+        ClassType *ct = ptr_expr->type->class_type_ptr;
+        if (!ct)
+        {
+            // Fallback to scope-based lookup
+            ct = lookup_class_in_scope(ptr_expr->type->class_name);
+        }
+        if (!ct)
+        {
+            fprintf(stderr, "[Type Error] Line %d: Class type '%s' not found\n",
+                    line_no, ptr_expr->type->class_name.c_str());
+            semantic_error_count++;
+            type = new Type(TYPE_ERROR);
+            result = new TACOperand();
+            return;
+        }
+
+        // Check if member exists
+        if (!ct->has_member(member_name))
+        {
+            fprintf(stderr, "[Type Error] Line %d: Class '%s' has no member named '%s'\n",
+                    line_no, ct->name.c_str(), member_name.c_str());
+            semantic_error_count++;
+            type = new Type(TYPE_ERROR);
+            result = new TACOperand();
+            return;
+        }
+
+        // Get member offset and type
+        int offset = ct->get_member_offset(member_name);
+        Type *member_type = ct->get_member_type(member_name);
+
+        // Generate TAC: dereference pointer, then compute member address
+        TACOperand struct_addr = tacGen.newTemp();
+        tacGen.emit(TAC_DEREF, struct_addr, *ptr_expr->result);
+        code.push_back(tacGen.getCode().back());
+
+        // Add offset to get member address
+        TACOperand offset_op(TACOperand::OPERAND_CONSTANT, std::to_string(offset));
+        TACOperand member_addr = tacGen.newTemp();
+        tacGen.emit(TAC_ADD, member_addr, struct_addr, offset_op);
+        code.push_back(tacGen.getCode().back());
+
+        // Load value from member address
+        result = new TACOperand(tacGen.newTemp());
+        tacGen.emit(TAC_DEREF, *result, member_addr);
+        code.push_back(tacGen.getCode().back());
+
+        // Set type to member type
+        type = new Type(*member_type);
+        return;
+    }
+
+    // Handle struct pointer member access (original code)
     // Lookup struct type - prefer using the direct pointer if available
     StructType *st = ptr_expr->type->struct_type_ptr;
     if (!st)

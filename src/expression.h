@@ -301,6 +301,34 @@ public:
 CallExpression *create_call_expression(const std::string &name, const std::vector<Expression *> &args);
 
 // ============================================================================
+// Method Call Expression - object.method(args)
+// ============================================================================
+class MethodCallExpression : public Expression
+{
+public:
+    Expression *object;         // The object whose method is being called
+    std::string method_name;    // Name of the method
+    std::vector<Expression *> args;  // Arguments (excluding implicit 'this')
+
+    MethodCallExpression(Expression *obj, const std::string &method, const std::vector<Expression *> &a)
+        : object(obj), method_name(method), args(a) {}
+    virtual ~MethodCallExpression()
+    {
+        delete object;
+        for (auto *e : args)
+            delete e;
+    }
+
+    std::string to_string() const override
+    {
+        return object->to_string() + "." + method_name + "(...)";
+    }
+    void generate_tac() override;
+};
+
+MethodCallExpression *create_method_call_expression(Expression *object, const char *method_name, const std::vector<Expression *> *args);
+
+// ============================================================================
 // Member Access Expressions - struct.member and ptr->member
 // ============================================================================
 

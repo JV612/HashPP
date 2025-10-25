@@ -23,6 +23,9 @@ Type current_function_return_type;
 Type backup_current_type;
 bool in_function_declaration = false;
 
+// Separate backup for method return types (to avoid interfering with function handling)
+Type method_return_type_backup;
+
 // Track pointer levels and array dimensions for current declarator
 int current_pointer_level = 0;
 bool current_is_array = false;
@@ -55,6 +58,22 @@ bool pending_function_header = false;
 std::vector<std::pair<std::string, Type>> pending_function_params;
 // Also keep just the type list for signature registration
 std::vector<Type> pending_function_param_types;
+
+// ========== METHOD-SPECIFIC VARIABLES (completely separate from functions) ==========
+// Method name being parsed
+std::string pending_method_name;
+// Method return type (saved BEFORE parameter parsing to avoid contamination)
+Type pending_method_return_type;
+// Method parameters (types only, for signature registration)
+std::vector<Type> pending_method_param_types;
+// Note: current_method_signature (declared in symbol_table.h) tracks which method we're inside
+// Note: method_return_type_backup is declared earlier with other Type variables
+// Flag to ensure class is finalized before first method (only once)
+bool class_finalized_for_methods = false;
+// ==================================================================================
+
+// For methods: collect parameters (excluding implicit 'this')
+std::vector<Type> current_method_params;
 
 // Helper function to create variable declarations with static support
 VariableDeclaration* create_variable_declaration(Type* var_type, const char* var_name, Expression* initializer) {
@@ -251,6 +270,18 @@ postfix_expression
         }
 	| postfix_expression '.' IDENTIFIER {
           $$ = create_member_access_expression($1, $3);
+          free($3);
+      }
+	| postfix_expression '.' IDENTIFIER '(' ')' {
+          // Method call with no arguments: object.method()
+          std::vector<Expression*> empty_args;
+          $$ = create_method_call_expression($1, $3, &empty_args);
+          free($3);
+      }
+	| postfix_expression '.' IDENTIFIER '(' argument_expression_list ')' {
+          // Method call with arguments: object.method(arg1, arg2, ...)
+          $$ = create_method_call_expression($1, $3, $5);
+          delete $5;  // argument list managed by MethodCallExpression
           free($3);
       }
 	| postfix_expression PTR_OP IDENTIFIER {
@@ -711,12 +742,77 @@ type_specifier
     | class_specifier
     ;
 
-/* Simplified stubs for advanced features - not used in basic compiler */
+/* Class support - using separate ClassType infrastructure */
 class_specifier
-    : CLASS IDENTIFIER '{' class_member_declarations '}'
+    : CLASS IDENTIFIER '{' {
+          // Check if class already exists in current scope
+          if (class_exists_in_current_scope($2)) {
+              fprintf(stderr, "[Semantic Error] Redefinition of class '%s'\n", $2);
+              semantic_error_count++;
+              current_class = nullptr;
+          } else {
+              // Create new class type
+              current_class = new ClassType($2);
+              register_class_in_scope($2, current_class);
+              class_finalized_for_methods = false;  // Reset flag for new class
+              if (debug) printf("[CLASS] Created class '%s'\n", $2);
+          }
+      } class_member_declarations '}' {
+          // Finalize class: calculate sizes and offsets (only if successfully created)
+          if (current_class) {
+              current_class->finalize();
+              if (debug) printf("[CLASS] Finalized class '%s', size=%d\n", current_class->name.c_str(), current_class->total_size);
+          }
+          
+          // Set current_type to this class
+          current_type = Type();
+          current_type.is_class = true;
+          current_type.class_name = $2;
+          current_type.class_type_ptr = lookup_class_in_scope($2);
+          current_class = nullptr;
+          
+          free($2);
+      }
     | CLASS IDENTIFIER ':' inheritance '{' class_member_declarations '}'
-    | CLASS IDENTIFIER '{' '}'
-    | CLASS IDENTIFIER
+        { 
+            // TODO: inheritance not yet implemented - treat as simple class for now
+            fprintf(stderr, "[Warning] Line %d: Class inheritance not yet implemented, treating as simple class\n", yylineno);
+            
+            // For now, create a simple class without inheritance
+            current_type = Type();
+            current_type.is_class = true;
+            current_type.class_name = $2;
+            free($2);
+        }
+    | CLASS IDENTIFIER '{' '}' {
+          // Empty class definition
+          ClassType* ct = new ClassType($2);
+          register_class_in_scope($2, ct);
+          ct->finalize();
+          
+          current_type = Type();
+          current_type.is_class = true;
+          current_type.class_name = $2;
+          current_type.class_type_ptr = ct;
+          if (debug) printf("[CLASS] Created empty class '%s'\n", $2);
+          free($2);
+      }
+    | CLASS IDENTIFIER {
+          // Reference to existing class (usage, not definition)
+          ClassType* ct = lookup_class_in_scope($2);
+          if (ct) {
+              current_type = Type();
+              current_type.is_class = true;
+              current_type.class_name = $2;
+              current_type.class_type_ptr = ct;
+              if (debug) printf("[CLASS] Using class '%s'\n", $2);
+          } else {
+              fprintf(stderr, "[Error] Line %d: class '%s' not defined\n", yylineno, $2);
+              semantic_error_count++;
+              current_type = Type(TYPE_ERROR);
+          }
+          free($2);
+      }
     ;
 
 inheritance
@@ -734,6 +830,10 @@ class_member_declarations
 class_member_or_access_spec
     : class_member
     | access_specifier ':'
+        {
+            // TODO: Access specifiers not yet implemented - ignore for now
+            if (debug) printf("[CLASS] Access specifier (ignored)\n");
+        }
     ;
 
 access_specifier
@@ -743,9 +843,374 @@ access_specifier
     ;
 
 class_member
-    : declaration
-    | function_definition
-    | '~' IDENTIFIER '(' ')' compound_statement
+    : type_specifier class_declarator_list ';' {
+          // Data members - using type_specifier instead of specifier_qualifier_list
+          // to avoid conflicts with method definitions
+          current_type = Type(TYPE_ERROR);
+          current_pointer_level = 0;
+          current_is_array = false;
+          current_array_sizes.clear();
+      }
+    | type_specifier pointer class_declarator_list ';' {
+          // Data members with pointer (e.g., int* ptr;)
+          current_type = Type(TYPE_ERROR);
+          current_pointer_level = 0;
+          current_is_array = false;
+          current_array_sizes.clear();
+      }
+    | type_specifier IDENTIFIER '(' ')' {
+          // Method with no parameters - use DEDICATED METHOD VARIABLES (not function variables)
+          method_return_type_backup = current_type;  // Save clean type immediately
+          if (current_class) {
+              // Finalize class before first method (calculates member offsets)
+              if (!class_finalized_for_methods) {
+                  current_class->finalize();
+                  class_finalized_for_methods = true;
+                  if (debug) printf("[CLASS] Finalized class '%s' before methods, size=%d\n", 
+                                   current_class->name.c_str(), current_class->total_size);
+              }
+              
+              pending_method_name = $2;  // METHOD variable (not pending_function_name)
+              pending_method_return_type = method_return_type_backup;  // METHOD variable
+              pending_method_return_type.pointer_level = 0;
+              if (debug) printf("[CLASS] Starting method '%s()' in class '%s'\n", $2, current_class->name.c_str());
+              
+              // Register method BEFORE compound_statement so we can emit label
+              std::vector<Type> empty_params;
+              MethodSignature* method = register_method(current_class->name, pending_method_name,
+                                                        empty_params, pending_method_return_type);
+              if (method) {
+                  current_class->add_method(method);
+                  
+                  // Set current method context for member access inside method body
+                  current_method_signature = method;
+                  
+                  // Set function return type for return statement validation
+                  current_function_return_type = method->returnType;
+                  
+                  // Emit TAC label for method entry using mangled name
+                  tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL, method->mangled_name), TACOperand());
+                  if (debug) printf("[TAC] %s:\n", method->mangled_name.c_str());
+                  
+                  // Reset return flag for new method
+                  current_function_has_return = false;
+                  
+                  if (debug) printf("[CLASS] Registered method '%s::%s' (no params)\n",
+                                   current_class->name.c_str(), pending_method_name.c_str());
+              }
+              free($2);
+          }
+      } compound_statement {
+          // Generate TAC for method body
+          if ($6 && current_class) {
+              if (debug) printf("[METHOD] Generating TAC for method body\n");
+              $6->generate_tac();
+          }
+          
+          // Check for missing return statements (same as function)
+          if (current_method_signature && !current_function_has_return) {
+              if (current_function_return_type.base_type == TYPE_VOID) {
+                  // Emit implicit return for void methods
+                  tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
+                  if(debug) printf("[Method] Added implicit return for void method '%s'\n", 
+                                  current_method_signature->mangled_name.c_str());
+              } else {
+                  // Error for non-void methods without return
+                  fprintf(stderr, "[Semantic Error] Line %d: Method '%s::%s' with non-void return type must have a return statement\n", 
+                          yylloc.first_line, current_class->name.c_str(), pending_method_name.c_str());
+                  semantic_error_count++;
+              }
+          }
+          
+          // Clear current method context
+          current_method_signature = nullptr;
+          current_function_return_type = Type(TYPE_ERROR);
+          
+          // Reset METHOD-specific state
+          pending_method_name = "";
+          pending_method_return_type = Type(TYPE_ERROR);
+          method_return_type_backup = Type(TYPE_ERROR);
+          current_type = Type(TYPE_ERROR);
+      }
+    | type_specifier IDENTIFIER '(' {
+          // Method with parameters - use DEDICATED METHOD VARIABLES (not function variables)
+          method_return_type_backup = current_type;  // Save clean type immediately
+          if (current_class) {
+              // Finalize class before first method (calculates member offsets)
+              if (!class_finalized_for_methods) {
+                  current_class->finalize();
+                  class_finalized_for_methods = true;
+                  if (debug) printf("[CLASS] Finalized class '%s' before methods, size=%d\n", 
+                                   current_class->name.c_str(), current_class->total_size);
+              }
+              
+              pending_method_name = $2;  // METHOD variable (not pending_function_name)
+              pending_method_return_type = method_return_type_backup;  // METHOD variable
+              pending_method_return_type.pointer_level = 0;
+              if (debug) printf("[CLASS] Starting method '%s(...)' in class '%s', return type=%s\n", 
+                               $2, current_class->name.c_str(), method_return_type_backup.to_string().c_str());
+              free($2);
+          }
+      } parameter_type_list ')' {
+          // Register method BEFORE compound_statement so we can emit label
+          if (current_class) {
+              if (debug) printf("[CLASS] About to register method '%s::%s' with return type=%s, %d params\n",
+                               current_class->name.c_str(), pending_method_name.c_str(),
+                               pending_method_return_type.to_string().c_str(),
+                               (int)pending_method_param_types.size());
+              MethodSignature* method = register_method(current_class->name, pending_method_name,
+                                                        pending_method_param_types, pending_method_return_type);
+              if (method) {
+                  current_class->add_method(method);
+                  
+                  // Set current method context for member access inside method body
+                  current_method_signature = method;
+                  
+                  // Set function return type for return statement validation
+                  current_function_return_type = method->returnType;
+                  
+                  // Emit TAC label for method entry using mangled name
+                  tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL, method->mangled_name), TACOperand());
+                  if (debug) printf("[TAC] %s:\n", method->mangled_name.c_str());
+                  
+                  // Reset return flag for new method
+                  current_function_has_return = false;
+                  
+                  if (debug) printf("[CLASS] Registered method '%s::%s' with %d params\n",
+                                   current_class->name.c_str(), pending_method_name.c_str(),
+                                   (int)pending_method_param_types.size());
+              }
+          }
+      } compound_statement {
+          // Generate TAC for method body
+          if ($8 && current_class) {
+              if (debug) printf("[METHOD] Generating TAC for method body\n");
+              $8->generate_tac();
+          }
+          
+          // Check for missing return statements (same as function)
+          if (current_method_signature && !current_function_has_return) {
+              if (current_function_return_type.base_type == TYPE_VOID) {
+                  // Emit implicit return for void methods
+                  tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
+                  if(debug) printf("[Method] Added implicit return for void method '%s'\n", 
+                                  current_method_signature->mangled_name.c_str());
+              } else {
+                  // Error for non-void methods without return
+                  fprintf(stderr, "[Semantic Error] Line %d: Method '%s::%s' with non-void return type must have a return statement\n", 
+                          yylloc.first_line, current_class->name.c_str(), pending_method_name.c_str());
+                  semantic_error_count++;
+              }
+          }
+          
+          // Clear current method context
+          current_method_signature = nullptr;
+          current_function_return_type = Type(TYPE_ERROR);
+          
+          // Reset METHOD-specific state
+          pending_method_param_types.clear();  // Clear method params (not pending_method_params)
+          pending_method_name = "";
+          pending_method_return_type = Type(TYPE_ERROR);
+          method_return_type_backup = Type(TYPE_ERROR);
+          current_type = Type(TYPE_ERROR);
+      }
+    | type_specifier pointer IDENTIFIER '(' ')' {
+          // Method with pointer return type, no parameters - use METHOD VARIABLES
+          method_return_type_backup = current_type;  // Save clean type
+          if (current_class) {
+              // Finalize class before first method (calculates member offsets)
+              if (!class_finalized_for_methods) {
+                  current_class->finalize();
+                  class_finalized_for_methods = true;
+                  if (debug) printf("[CLASS] Finalized class '%s' before methods, size=%d\n", 
+                                   current_class->name.c_str(), current_class->total_size);
+              }
+              
+              pending_method_name = $3;  // METHOD variable
+              pending_method_return_type = method_return_type_backup;  // METHOD variable
+              pending_method_return_type.pointer_level = $2;
+              if (debug) printf("[CLASS] Starting method '%s()' (ptr return) in class '%s'\n", $3, current_class->name.c_str());
+              
+              // Register method BEFORE compound_statement
+              std::vector<Type> empty_params;
+              MethodSignature* method = register_method(current_class->name, pending_method_name,
+                                                        empty_params, pending_method_return_type);
+              if (method) {
+                  current_class->add_method(method);
+                  
+                  // Set current method context for member access inside method body
+                  current_method_signature = method;
+                  
+                  // Set function return type for return statement validation
+                  current_function_return_type = method->returnType;
+                  
+                  // Emit TAC label for method entry using mangled name
+                  tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL, method->mangled_name), TACOperand());
+                  if (debug) printf("[TAC] %s:\n", method->mangled_name.c_str());
+                  
+                  // Reset return flag for new method
+                  current_function_has_return = false;
+                  
+                  if (debug) printf("[CLASS] Registered method '%s::%s' (ptr return, no params)\n",
+                                   current_class->name.c_str(), pending_method_name.c_str());
+              }
+              free($3);
+          }
+      } compound_statement {
+          // Generate TAC for method body
+          if ($7 && current_class) {
+              if (debug) printf("[METHOD] Generating TAC for method body\n");
+              $7->generate_tac();
+          }
+          
+          // Check for missing return statements (same as function)
+          if (current_method_signature && !current_function_has_return) {
+              if (current_function_return_type.base_type == TYPE_VOID) {
+                  // Emit implicit return for void methods
+                  tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
+                  if(debug) printf("[Method] Added implicit return for void method '%s'\n", 
+                                  current_method_signature->mangled_name.c_str());
+              } else {
+                  // Error for non-void methods without return
+                  fprintf(stderr, "[Semantic Error] Line %d: Method '%s::%s' with non-void return type must have a return statement\n", 
+                          yylloc.first_line, current_class->name.c_str(), pending_method_name.c_str());
+                  semantic_error_count++;
+              }
+          }
+          
+          // Clear current method context
+          current_method_signature = nullptr;
+          current_function_return_type = Type(TYPE_ERROR);
+          
+          pending_method_name = "";
+          pending_method_return_type = Type(TYPE_ERROR);
+          method_return_type_backup = Type(TYPE_ERROR);
+          current_type = Type(TYPE_ERROR);
+      }
+    | type_specifier pointer IDENTIFIER '(' {
+          // Method with pointer return type and parameters - use METHOD VARIABLES
+          method_return_type_backup = current_type;  // Save clean type
+          if (current_class) {
+              // Finalize class before first method (calculates member offsets)
+              if (!class_finalized_for_methods) {
+                  current_class->finalize();
+                  class_finalized_for_methods = true;
+                  if (debug) printf("[CLASS] Finalized class '%s' before methods, size=%d\n", 
+                                   current_class->name.c_str(), current_class->total_size);
+              }
+              
+              pending_method_name = $3;  // METHOD variable
+              pending_method_return_type = method_return_type_backup;  // METHOD variable
+              pending_method_return_type.pointer_level = $2;
+              if (debug) printf("[CLASS] Starting method '%s(...)' (ptr return) in class '%s'\n", $3, current_class->name.c_str());
+              free($3);
+          }
+      } parameter_type_list ')' {
+          // Register method BEFORE compound_statement
+          if (current_class) {
+              if (debug) printf("[CLASS] About to register method '%s::%s' (ptr return) with %d params\n",
+                               current_class->name.c_str(), pending_method_name.c_str(),
+                               (int)pending_method_param_types.size());
+              MethodSignature* method = register_method(current_class->name, pending_method_name,
+                                                        pending_method_param_types, pending_method_return_type);
+              if (method) {
+                  current_class->add_method(method);
+                  
+                  // Set current method context for member access inside method body
+                  current_method_signature = method;
+                  
+                  // Set function return type for return statement validation
+                  current_function_return_type = method->returnType;
+                  
+                  // Emit TAC label for method entry using mangled name
+                  tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL, method->mangled_name), TACOperand());
+                  if (debug) printf("[TAC] %s:\n", method->mangled_name.c_str());
+                  
+                  // Reset return flag for new method
+                  current_function_has_return = false;
+                  
+                  if (debug) printf("[CLASS] Registered method '%s::%s' (ptr return, %d params)\n",
+                                   current_class->name.c_str(), pending_method_name.c_str(),
+                                   (int)pending_method_param_types.size());
+              }
+          }
+      } compound_statement {
+          // Generate TAC for method body
+          if ($9 && current_class) {
+              if (debug) printf("[METHOD] Generating TAC for method body\n");
+              $9->generate_tac();
+          }
+          
+          // Check for missing return statements (same as function)
+          if (current_method_signature && !current_function_has_return) {
+              if (current_function_return_type.base_type == TYPE_VOID) {
+                  // Emit implicit return for void methods
+                  tacGen.emit(TAC_RETURN, TACOperand(), TACOperand());
+                  if(debug) printf("[Method] Added implicit return for void method '%s'\n", 
+                                  current_method_signature->mangled_name.c_str());
+              } else {
+                  // Error for non-void methods without return
+                  fprintf(stderr, "[Semantic Error] Line %d: Method '%s::%s' with non-void return type must have a return statement\n", 
+                          yylloc.first_line, current_class->name.c_str(), pending_method_name.c_str());
+                  semantic_error_count++;
+              }
+          }
+          
+          // Clear current method context
+          current_method_signature = nullptr;
+          current_function_return_type = Type(TYPE_ERROR);
+          
+          pending_method_param_types.clear();  // Clear method params (not pending_method_params)
+          pending_method_name = "";
+          pending_method_return_type = Type(TYPE_ERROR);
+          method_return_type_backup = Type(TYPE_ERROR);
+          current_type = Type(TYPE_ERROR);
+      }
+    ;
+
+class_declarator_list
+    : class_declarator
+    | class_declarator_list ',' class_declarator
+    ;
+
+class_declarator
+    : declarator {
+          // Add member to current class
+          if (current_class && $1) {
+              Type* member_type = new Type(current_type);
+              member_type->pointer_level = current_pointer_level;
+              member_type->is_array = current_is_array;
+              member_type->array_dim = current_array_sizes.size();
+              member_type->array_sizes = current_array_sizes;
+              
+              current_class->add_member($1, member_type);
+              if (debug) printf("[CLASS] Added member '%s' of type '%s' to class '%s'\n", 
+                               $1, member_type->to_string().c_str(), current_class->name.c_str());
+              
+              // Reset for next member
+              current_pointer_level = 0;
+              current_is_array = false;
+              current_array_sizes.clear();
+              free($1);
+          }
+      }
+    | ':' constant_expression {
+          // Bit-field (not fully implemented for classes, just skip)
+          if (debug) printf("[CLASS] Bit-field (skipped)\n");
+      }
+    | declarator ':' constant_expression {
+          // Bit-field with declarator (not fully implemented)
+          if ($1) {
+              Type* member_type = new Type(current_type);
+              member_type->pointer_level = current_pointer_level;
+              current_class->add_member($1, member_type);
+              if (debug) printf("[CLASS] Added bit-field member '%s' (simplified)\n", $1);
+              current_pointer_level = 0;
+              current_is_array = false;
+              current_array_sizes.clear();
+              free($1);
+          }
+      }
     ;
 
 struct_or_union_specifier
@@ -773,6 +1238,7 @@ struct_or_union_specifier
           // Set current_type to this struct
           current_type = Type();
           current_type.is_struct = true;
+          current_type.is_union = current_struct->is_union;
           current_type.struct_name = $2;
           current_type.struct_type_ptr = lookup_struct_in_scope($2);
           current_struct = nullptr;
@@ -796,6 +1262,7 @@ struct_or_union_specifier
           // Set current_type to this struct
           current_type = Type();
           current_type.is_struct = true;
+          current_type.is_union = current_struct->is_union;
           current_type.struct_name = current_struct->name;
           current_type.struct_type_ptr = current_struct;
           current_struct = nullptr;
@@ -811,6 +1278,7 @@ struct_or_union_specifier
           
           current_type = Type();
           current_type.is_struct = true;
+          current_type.is_union = st->is_union;
           current_type.struct_name = $2;
           current_type.struct_type_ptr = st;
           if (debug) printf("[STRUCT] Created empty struct '%s'\n", $2);
@@ -826,6 +1294,7 @@ struct_or_union_specifier
           
           current_type = Type();
           current_type.is_struct = true;
+          current_type.is_union = st->is_union;
           current_type.struct_name = temp_name;
           current_type.struct_type_ptr = st;
           if (debug) printf("[STRUCT] Created anonymous empty struct\n");
@@ -841,6 +1310,7 @@ struct_or_union_specifier
               }
               current_type = Type();
               current_type.is_struct = true;
+              current_type.is_union = st->is_union;
               current_type.struct_name = $2;
               current_type.struct_type_ptr = st;
               if (debug) printf("[STRUCT] Using struct '%s'\n", $2);
@@ -1031,6 +1501,7 @@ declarator
 	: pointer direct_declarator        
         { 
             // FIXED: Capture clean return type before parameter processing can contaminate it
+            // Methods use their own separate tracking, so this is safe for functions
             pending_function_return_type = current_type;
             pending_function_return_type.pointer_level = $1;
             current_pointer_level = $1;
@@ -1039,6 +1510,7 @@ declarator
 	| direct_declarator               
         { 
             // FIXED: Capture clean return type before parameter processing can contaminate it
+            // Methods use their own separate tracking, so this is safe for functions
             pending_function_return_type = current_type;
             pending_function_return_type.pointer_level = 0;
             current_pointer_level = 0;
@@ -1047,6 +1519,7 @@ declarator
 	| '&' direct_declarator           
         { 
             // FIXED: Capture clean return type before parameter processing can contaminate it
+            // Methods use their own separate tracking, so this is safe for functions
             pending_function_return_type = current_type;
             pending_function_return_type.pointer_level = 0;
             current_pointer_level = 0;
@@ -1188,11 +1661,17 @@ parameter_declaration
               current_is_array = false;
               current_array_sizes.clear();
 
+              // Add to BOTH function and method parameter lists (they can share this)
               pending_function_params.emplace_back(std::string($2), param_type);
               pending_function_param_types.push_back(param_type);
+              pending_method_param_types.push_back(param_type);  // Also add to method params
               
-              // FIXED: Restore the function return type after parameter processing
-              current_type = pending_function_return_type;
+              // FIXED: Restore return type - BUT ONLY FOR FUNCTIONS (not methods)
+              // Methods have their own return type tracking that should NOT be touched here
+              if (!current_class) {
+                  current_type = pending_function_return_type;
+              }
+              // If we're in a class, DON'T restore - method return type is in pending_method_return_type
           }
       }
     | declaration_specifiers abstract_declarator
@@ -1733,6 +2212,9 @@ int main(int argc, char *argv[]) {
         }
 
         if(debug) print_function_signatures();
+        
+        // Print method signatures for debugging
+        print_method_signatures();
 
         tacGen.print();
         

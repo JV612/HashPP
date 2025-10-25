@@ -158,7 +158,7 @@ void VariableDeclaration::generate_tac()
             // For struct types, also check struct names match
             if (decl_type->is_struct && initializer->type->is_struct)
             {
-                if (decl_type->struct_name == initializer->type->struct_name)
+                if (decl_type->struct_name == initializer->type->struct_name && decl_type->is_union == initializer->type->is_union)
                 {
                     compatible = true;
                 }
@@ -280,7 +280,7 @@ void VariableDeclaration::handle_array_initialization(ArrayInitializerExpression
             // For struct types, also check struct names match
             if (decl_type->is_struct && init_expr->type->is_struct)
             {
-                if (decl_type->struct_name == init_expr->type->struct_name)
+                if (decl_type->struct_name == init_expr->type->struct_name && decl_type->is_union == init_expr->type->is_union)
                 {
                     elem_compatible = true;
                 }

@@ -12,9 +12,13 @@ int next_scope_id = 0;
 
 int semantic_error_count = 0;
 bool current_function_has_return = false;
-bool debug = false;
+bool debug = true;
 std::vector<FunctionSignature> function_signatures;
 FunctionSignature *current_function_signature = nullptr;
+
+// Method-related globals
+std::vector<MethodSignature> method_signatures;
+MethodSignature *current_method_signature = nullptr;
 
 // ============================================================================
 // Enum Type Implementation
@@ -237,6 +241,172 @@ bool struct_exists_in_current_scope(const std::string &struct_name)
 }
 
 // ============================================================================
+// Class Type Support
+// ============================================================================
+
+ClassType *current_class = nullptr;
+
+void ClassType::add_member(const std::string &member_name, Type *member_type)
+{
+    // Check for duplicate member names
+    if (has_member(member_name))
+    {
+        fprintf(stderr, "[Semantic Error] Duplicate member '%s' in class '%s'\n",
+                member_name.c_str(), name.c_str());
+        semantic_error_count++;
+        delete member_type; // Clean up the duplicate type
+        return;
+    }
+    members.push_back(std::make_pair(member_name, member_type));
+}
+
+int ClassType::get_member_offset(const std::string &member_name) const
+{
+    auto it = member_offsets.find(member_name);
+    if (it != member_offsets.end())
+    {
+        return it->second;
+    }
+    return 0; // Should not happen if used correctly
+}
+
+Type *ClassType::get_member_type(const std::string &member_name) const
+{
+    for (const auto &member : members)
+    {
+        if (member.first == member_name)
+        {
+            return member.second;
+        }
+    }
+    return nullptr; // Should not happen if used correctly
+}
+
+bool ClassType::has_member(const std::string &member_name) const
+{
+    for (const auto &member : members)
+    {
+        if (member.first == member_name)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void ClassType::finalize()
+{
+    // Calculate offsets and total size
+    // Classes use sequential layout (like structs)
+    member_offsets.clear();
+    total_size = 0;
+
+    int current_offset = 0;
+    for (auto &member : members)
+    {
+        member_offsets[member.first] = current_offset;
+        int member_size = member.second->get_total_size();
+        current_offset += member_size;
+    }
+    total_size = current_offset;
+}
+
+void ClassType::add_method(MethodSignature *method)
+{
+    methods.push_back(method);
+}
+
+bool ClassType::has_method(const std::string &method_name) const
+{
+    for (const auto *method : methods)
+    {
+        if (method->method_name == method_name)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<MethodSignature *> ClassType::get_methods(const std::string &method_name) const
+{
+    std::vector<MethodSignature *> matching_methods;
+    for (auto *method : methods)
+    {
+        if (method->method_name == method_name)
+        {
+            matching_methods.push_back(method);
+        }
+    }
+    return matching_methods;
+}
+
+// ============================================================================
+// Scope-aware Class Management Functions
+// ============================================================================
+
+void register_class_in_scope(const std::string &class_name, ClassType *class_type)
+{
+    SymbolTable *scope = current_scope();
+    if (!scope)
+    {
+        // At global level, use global symbol table
+        scope = globalSymbolTable;
+        if (debug)
+            printf("[Class Registry] Registering '%s' in global scope\n", class_name.c_str());
+    }
+    else
+    {
+        if (debug)
+            printf("[Class Registry] Registering '%s' in scope %d\n", class_name.c_str(), scope->Scopelevel);
+    }
+    if (scope)
+    {
+        scope->register_class(class_name, class_type);
+    }
+}
+
+ClassType *lookup_class_in_scope(const std::string &class_name)
+{
+    // Start from current scope and walk up to parent scopes
+    SymbolTable *scope = current_scope();
+    if (!scope)
+    {
+        // At global level, start with global symbol table
+        scope = globalSymbolTable;
+    }
+
+    while (scope)
+    {
+        ClassType *ct = scope->lookup_class_local(class_name);
+        if (ct)
+        {
+            return ct;
+        }
+        scope = scope->Parent;
+    }
+
+    return nullptr;
+}
+
+bool class_exists_in_current_scope(const std::string &class_name)
+{
+    SymbolTable *scope = current_scope();
+    if (scope)
+    {
+        return scope->lookup_class_local(class_name) != nullptr;
+    }
+
+    // Check global scope if no current scope
+    if (globalSymbolTable)
+    {
+        return globalSymbolTable->lookup_class_local(class_name) != nullptr;
+    }
+
+    return false;
+}
+
+// ============================================================================
 // Type Implementation
 // ============================================================================
 
@@ -247,9 +417,16 @@ string Type::to_string() const
     if (is_const)
         result = "const ";
 
-    if (is_struct)
+    if (is_class)
     {
-        result += "struct " + struct_name;
+        result += "class " + class_name;
+    }
+    else if (is_struct)
+    {
+        if (is_union)
+            result += "union " + struct_name;
+        else
+            result += "struct " + struct_name;
     }
     else
     {
@@ -304,6 +481,22 @@ int Type::get_size() const
     // Pointers are 8 bytes (64-bit)
     if (pointer_level > 0)
         return 8;
+
+    // Class types - use direct pointer if available
+    if (is_class)
+    {
+        ClassType *ct = class_type_ptr;
+        if (!ct)
+        {
+            // Fallback to scope-based lookup
+            ct = lookup_class_in_scope(class_name);
+        }
+        if (ct)
+        {
+            return ct->total_size;
+        }
+        return 0; // Error case - class not found
+    }
 
     // Struct types - prefer using direct pointer if available
     if (is_struct)
@@ -446,9 +639,9 @@ bool Type::is_integer() const
  */
 bool Type::is_error() const
 {
-    // Struct types have base_type==TYPE_ERROR but are not actual errors
-    // if is_struct is true
-    if (is_struct)
+    // Struct types, union types, and class types have base_type==TYPE_ERROR but are not actual errors
+    // if is_struct (which includes unions) or is_class is true
+    if (is_struct || is_union || is_class)
         return false;
     return base_type == TYPE_ERROR;
 }
@@ -523,6 +716,27 @@ StructType *SymbolTable::lookup_struct_local(const std::string &name)
 {
     auto it = struct_types.find(name);
     if (it != struct_types.end())
+    {
+        return it->second;
+    }
+    return nullptr;
+}
+
+bool SymbolTable::register_class(const std::string &name, ClassType *ct)
+{
+    // Check if class already exists in THIS scope
+    if (class_types.find(name) != class_types.end())
+    {
+        return false; // Already exists
+    }
+    class_types[name] = ct;
+    return true;
+}
+
+ClassType *SymbolTable::lookup_class_local(const std::string &name)
+{
+    auto it = class_types.find(name);
+    if (it != class_types.end())
     {
         return it->second;
     }
@@ -866,6 +1080,21 @@ static bool type_compatible(const Type &expected, const Type &actual)
     if (expected.is_error() || actual.is_error())
         return false;
 
+    // Handle struct/union/class types - must match exactly
+    if (expected.is_struct && actual.is_struct)
+    {
+        // Both are structs/unions - must have same name and same union flag
+        return expected.struct_name == actual.struct_name && expected.is_union == actual.is_union;
+    }
+    if (expected.is_class && actual.is_class)
+    {
+        // Both are classes - must have same name
+        return expected.class_name == actual.class_name;
+    }
+    // If one is struct/class and other is not, incompatible
+    if (expected.is_struct != actual.is_struct || expected.is_class != actual.is_class)
+        return false;
+
     // Handle array decay: array T[N] decays to pointer T*
     if (expected.is_pointer() && actual.is_array)
     {
@@ -950,6 +1179,127 @@ void print_function_signatures()
 
     cout << "---------------------------------------------------------------\n"
          << endl;
+}
+
+// ===================== Method Registry =====================
+
+MethodSignature *register_method(const std::string &class_name, const std::string &method_name,
+                                  const std::vector<Type> &params, const Type &retType)
+{
+    // Check if method with same signature already exists in this class
+    MethodSignature *existing = find_method_match(class_name, method_name, params);
+    if (existing)
+    {
+        cerr << "[Semantic Error] Redeclaration of method '" << class_name << "::" << method_name
+             << "' with same parameter types\n";
+        semantic_error_count++;
+        return nullptr;
+    }
+
+    // Find next unique MethodID for this method name in this class
+    int max_id = 0;
+    for (const auto &ms : method_signatures)
+    {
+        if (ms.class_name == class_name && ms.method_name == method_name && ms.MethodID >= max_id)
+        {
+            max_id = ms.MethodID + 1;
+        }
+    }
+
+    // Create method signature
+    MethodSignature new_method;
+    new_method.class_name = class_name;
+    new_method.method_name = method_name;
+    new_method.params = params;
+    new_method.returnType = retType;
+    new_method.MethodID = max_id;
+    
+    // Generate mangled name for TAC
+    new_method.mangled_name = mangle_method_for_tac(class_name, method_name, new_method);
+    
+    // Add to global registry
+    method_signatures.push_back(new_method);
+    
+    if (debug)
+    {
+        printf("[Method Registry] Registered method '%s::%s' with ID %d, mangled as '%s'\n",
+               class_name.c_str(), method_name.c_str(), max_id, new_method.mangled_name.c_str());
+    }
+    
+    return &method_signatures.back();
+}
+
+MethodSignature *find_method_match(const std::string &class_name, const std::string &method_name,
+                                     const std::vector<Type> &argTypes)
+{
+    for (auto &ms : method_signatures)
+    {
+        if (ms.class_name != class_name || ms.method_name != method_name)
+            continue;
+
+        if (ms.params.size() != argTypes.size())
+            continue;
+
+        bool ok = true;
+        for (size_t j = 0; j < argTypes.size(); ++j)
+        {
+            if (!type_compatible(ms.params[j], argTypes[j]))
+            {
+                ok = false;
+                break;
+            }
+        }
+        if (ok)
+            return &ms;
+    }
+
+    return nullptr;
+}
+
+std::string mangle_method_for_tac(const std::string &class_name, const std::string &method_name, const MethodSignature &ms)
+{
+    // Mangle as: ClassName_methodName_ID
+    // For more sophisticated mangling, could include parameter types
+    return class_name + "_" + method_name + "_" + std::to_string(ms.MethodID);
+}
+
+void print_method_signatures()
+{
+    if (method_signatures.empty())
+    {
+        if (debug)
+            cout << "\n[No Method Signatures Registered]\n" << endl;
+        return;
+    }
+
+    cout << "\n--- Method Signatures ---\n";
+    cout << left << setw(20) << "Class::Method"
+         << setw(30) << "Parameter Types"
+         << setw(15) << "Return Type"
+         << setw(15) << "Mangled Name" << endl;
+    cout << "-------------------------------------------------------------------------\n";
+
+    for (const auto &ms : method_signatures)
+    {
+        cout << left << setw(20) << (ms.class_name + "::" + ms.method_name);
+
+        // Parameter types (excluding implicit 'this')
+        string paramStr;
+        for (size_t i = 0; i < ms.params.size(); ++i)
+        {
+            paramStr += ms.params[i].to_string();
+            if (i < ms.params.size() - 1)
+                paramStr += ", ";
+        }
+        if (paramStr.empty())
+            paramStr = "void";
+        cout << setw(30) << paramStr;
+
+        cout << setw(15) << ms.returnType.to_string();
+        cout << setw(15) << ms.mangled_name << endl;
+    }
+
+    cout << "-------------------------------------------------------------------------\n" << endl;
 }
 
 void SymbolTable::print() const
