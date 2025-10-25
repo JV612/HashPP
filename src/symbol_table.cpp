@@ -1,8 +1,21 @@
 #include "symbol_table.h"
+#include "diagnostics.h"
 #include <iostream>
 #include <iomanip>
 
 using namespace std;
+
+extern int yylineno;
+
+namespace
+{
+int effective_line(int line)
+{
+    return line > 0 ? line : yylineno;
+}
+}
+
+#define SEM_ERROR(line, ...) report_semantic_error(effective_line(line), __VA_ARGS__)
 
 // Global symbol table stack
 
@@ -12,7 +25,11 @@ int next_scope_id = 0;
 
 int semantic_error_count = 0;
 bool current_function_has_return = false;
-bool debug = true;
+bool debug = false;
+bool function_debug = false;
+bool method_debug = false;
+bool symbol_debug = false;
+bool ast_debug = false;
 std::vector<FunctionSignature> function_signatures;
 FunctionSignature *current_function_signature = nullptr;
 
@@ -94,13 +111,13 @@ int get_enum_member_value(const std::string &identifier)
 
 StructType *current_struct = nullptr;
 
-void StructType::add_member(const std::string &member_name, Type *member_type)
+void StructType::add_member(const std::string &member_name, Type *member_type, int line)
 {
     // Check for duplicate member names
     if (has_member(member_name))
     {
-        fprintf(stderr, "[Semantic Error] Duplicate member '%s' in struct '%s'\n",
-                member_name.c_str(), name.c_str());
+        SEM_ERROR(line, "Duplicate member '%s' in struct '%s'",
+                  member_name.c_str(), name.c_str());
         semantic_error_count++;
         delete member_type; // Clean up the duplicate type
         return;
@@ -246,13 +263,13 @@ bool struct_exists_in_current_scope(const std::string &struct_name)
 
 ClassType *current_class = nullptr;
 
-void ClassType::add_member(const std::string &member_name, Type *member_type)
+void ClassType::add_member(const std::string &member_name, Type *member_type, int line)
 {
     // Check for duplicate member names
     if (has_member(member_name))
     {
-        fprintf(stderr, "[Semantic Error] Duplicate member '%s' in class '%s'\n",
-                member_name.c_str(), name.c_str());
+        SEM_ERROR(line, "Duplicate member '%s' in class '%s'",
+                  member_name.c_str(), name.c_str());
         semantic_error_count++;
         delete member_type; // Clean up the duplicate type
         return;
@@ -616,6 +633,7 @@ bool Type::is_numeric() const
     return base_type == TYPE_INT ||
            base_type == TYPE_FLOAT ||
            base_type == TYPE_CHAR ||
+           base_type == TYPE_BOOL ||
            base_type == TYPE_ENUM;
 }
 
@@ -631,6 +649,7 @@ bool Type::is_integer() const
 
     return base_type == TYPE_INT ||
            base_type == TYPE_CHAR ||
+           base_type == TYPE_BOOL ||
            base_type == TYPE_ENUM;
 }
 
@@ -667,6 +686,12 @@ Type Type::promote_with(const Type &other) const
 
     // Int takes precedence over char
     if (base_type == TYPE_INT || other.base_type == TYPE_INT)
+    {
+        return Type(TYPE_INT);
+    }
+
+    // Treat bool in arithmetic as promoted to int (C-style integer promotion)
+    if (base_type == TYPE_BOOL || other.base_type == TYPE_BOOL)
     {
         return Type(TYPE_INT);
     }
@@ -1144,11 +1169,12 @@ int find_function_match(const std::string &name, const std::vector<Type> &argTyp
 
 void print_function_signatures()
 {
+    if (!function_debug) return;
+    
     if (function_signatures.empty())
     {
-        if (debug)
-            cout << "\n[No Function Signatures Registered]\n"
-                 << endl;
+        cout << "\n[No Function Signatures Registered]\n"
+             << endl;
         return;
     }
 
@@ -1311,10 +1337,11 @@ std::string mangle_method_for_tac(const std::string &class_name, const std::stri
 
 void print_method_signatures()
 {
+    if (!method_debug) return;
+    
     if (method_signatures.empty())
     {
-        if (debug)
-            cout << "\n[No Method Signatures Registered]\n" << endl;
+        cout << "\n[No Method Signatures Registered]\n" << endl;
         return;
     }
 
@@ -1358,11 +1385,12 @@ void print_method_signatures()
 
 void SymbolTable::print() const
 {
+    if (!symbol_debug) return;
+    
     if (table.empty())
     {
-        if (debug)
-            cout << "\n[Symbol Table is empty]\n"
-                 << endl;
+        cout << "\n[Symbol Table is empty]\n"
+             << endl;
         return;
     }
 

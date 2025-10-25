@@ -1,8 +1,8 @@
 #include "declaration.h"
 #include "symbol_table.h"
 #include "statement.h" // for register_constructed_local
+#include "diagnostics.h"
 #include <iostream>
-#include <cstdio>
 
 using namespace std;
 
@@ -160,8 +160,9 @@ void VariableDeclaration::generate_tac()
         // Check if initializer has a type
         if (!initializer->type)
         {
-            fprintf(stderr, "[Type Error] Line %d: Missing type information in initializer for '%s'\n",
-                    line_no, var_name.c_str());
+            report_semantic_error(line_no,
+                                   "Missing type information in initializer for '%s'",
+                                   var_name.c_str());
             semantic_error_count++;
             return;
         }
@@ -194,13 +195,24 @@ void VariableDeclaration::generate_tac()
             }
             // else: one is struct, one is not -> incompatible
         }
-        // Array decay check: array T[N] can initialize pointer T*
-        else if (decl_type->pointer_level == 1 && !decl_type->is_array &&
+        // Array decay check: array T[N] can initialize pointer to T
+        else if (decl_type->pointer_level > 0 && !decl_type->is_array &&
                  initializer->type->is_array &&
                  decl_type->base_type == initializer->type->base_type)
         {
-            // Array decays to pointer in initialization: char[N] -> char*
-            compatible = true;
+            // Array decay: T[N] -> T* where T can itself be a pointer type
+            // Examples:
+            // - int[5] -> int* (decl_type->pointer_level=1, initializer->pointer_level=0)
+            // - int*[2] -> int** (decl_type->pointer_level=2, initializer->pointer_level=1)
+            
+            if (initializer->type->array_dim == 1 && 
+                decl_type->pointer_level == (initializer->type->pointer_level + 1))
+            {
+                // Valid single-dimensional array decay
+                compatible = true;
+            }
+            // Multidimensional arrays should not decay to simple pointers
+            // int[3][2] should not become int* (that would be incorrect)
         }
         // Null constant check: null can be assigned to any pointer type
         else if (decl_type->pointer_level > 0 &&
@@ -214,17 +226,21 @@ void VariableDeclaration::generate_tac()
                  !decl_type->is_array && !initializer->type->is_array &&
                  decl_type->is_numeric() && initializer->type->is_numeric())
         {
-            // Allow implicit numeric conversions but warn
-            compatible = true;
-            fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in initialization of '%s' from %s to %s\n",
-                    line_no, var_name.c_str(), initializer->type->to_string().c_str(), decl_type->to_string().c_str());
+        // Allow implicit numeric conversions but warn
+        compatible = true;
+        report_semantic_warning(line_no,
+                    "Implicit conversion in initialization of '%s' from %s to %s",
+                    var_name.c_str(), initializer->type->to_string().c_str(),
+                    decl_type->to_string().c_str());
         }
 
         // If not compatible, it's an error
         if (!compatible)
         {
-            fprintf(stderr, "[Type Error] Line %d: Cannot initialize '%s' of type %s with value of type %s\n",
-                    line_no, var_name.c_str(), decl_type->to_string().c_str(), initializer->type->to_string().c_str());
+        report_semantic_error(line_no,
+                  "Cannot initialize '%s' of type %s with value of type %s",
+                  var_name.c_str(), decl_type->to_string().c_str(),
+                  initializer->type->to_string().c_str());
             semantic_error_count++;
             return;
         }
@@ -281,8 +297,9 @@ void VariableDeclaration::handle_array_initialization(ArrayInitializerExpression
     // Check that we don't have too many initializers
     if (array_init->initializers.size() > static_cast<size_t>(array_size))
     {
-        fprintf(stderr, "[Error] Line %d: Too many initializers for array '%s' (expected %d, got %zu)\n",
-                line_no, var_name.c_str(), array_size, array_init->initializers.size());
+        report_semantic_error(line_no,
+                              "Too many initializers for array '%s' (expected %d, got %zu)",
+                              var_name.c_str(), array_size, array_init->initializers.size());
         semantic_error_count++;
         return;
     }
@@ -306,8 +323,9 @@ void VariableDeclaration::handle_array_initialization(ArrayInitializerExpression
         // Type check the initializer
         if (!init_expr->type)
         {
-            fprintf(stderr, "[Type Error] Line %d: Missing type in array initializer element %zu\n",
-                    line_no, i);
+            report_semantic_error(line_no,
+                                  "Missing type in array initializer element %zu",
+                                  i);
             semantic_error_count++;
             continue;
         }
@@ -340,8 +358,9 @@ void VariableDeclaration::handle_array_initialization(ArrayInitializerExpression
 
         if (!elem_compatible)
         {
-            fprintf(stderr, "[Type Error] Line %d: Incompatible type in array initializer element %zu\n",
-                    line_no, i);
+            report_semantic_error(line_no,
+                                  "Incompatible type in array initializer element %zu",
+                                  i);
             semantic_error_count++;
             continue;
         }

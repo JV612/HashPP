@@ -74,7 +74,7 @@ public:
         }
     }
 
-    void add_member(const std::string &member_name, Type *member_type);
+    void add_member(const std::string &member_name, Type *member_type, int line);
     int get_member_offset(const std::string &member_name) const;
     Type *get_member_type(const std::string &member_name) const;
     bool has_member(const std::string &member_name) const;
@@ -114,7 +114,7 @@ public:
         // Note: methods are managed by global method_signatures vector
     }
 
-    void add_member(const std::string &member_name, Type *member_type);
+    void add_member(const std::string &member_name, Type *member_type, int line);
     int get_member_offset(const std::string &member_name) const;
     Type *get_member_type(const std::string &member_name) const;
     bool has_member(const std::string &member_name) const;
@@ -280,8 +280,12 @@ extern int semantic_error_count;
 // Track if current function has a return statement (for return checking)
 extern bool current_function_has_return;
 
-// Global debug flag for controlling debug output
-extern bool debug;
+// Global debug flags for controlling different types of debug output
+extern bool debug;          // Master debug flag
+extern bool function_debug; // Function signature printing
+extern bool method_debug;   // Method signature printing  
+extern bool symbol_debug;   // Symbol table printing
+extern bool ast_debug;      // AST node printing
 
 // ===================== Function Registry =====================
 struct FunctionSignature

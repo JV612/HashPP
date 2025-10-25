@@ -7,11 +7,21 @@
 #include "expression.h"
 #include "statement.h"
 #include "declaration.h"
+#include "diagnostics.h"
 
 int yylex(void);
 void yyerror(const char *s);
 extern int yylineno;
 extern int semantic_error_count;
+
+static inline int diag_line(int line)
+{
+    return line > 0 ? line : yylineno;
+}
+
+#define PARSE_ERROR(line, ...) report_parse_error(diag_line(line), __VA_ARGS__)
+#define SEM_ERROR(line, ...) report_semantic_error(diag_line(line), __VA_ARGS__)
+#define SEM_WARN(line, ...) report_semantic_warning(diag_line(line), __VA_ARGS__)
 
 // Current type being declared
 Type current_type;
@@ -19,7 +29,6 @@ Type current_type;
 // Current function return type (value). TYPE_ERROR sentinel means "no active function".
 Type current_function_return_type;
 
-// FIXED: Backup of current_type to prevent contamination by parameter processing  
 Type backup_current_type;
 bool in_function_declaration = false;
 
@@ -126,6 +135,8 @@ VariableDeclaration* create_variable_declaration(Type* var_type, const char* var
 %type <str> identifier_list
 %type <str> parameter_declaration
 %type <ival> pointer
+%type <ival> pointer_opt
+%type <ival> type_qualifier_list_opt
 
 %type <expr> expression
 %type <expr> assignment_expression
@@ -756,7 +767,7 @@ init_declarator
                       if (var_type->array_sizes[i] == 0) { has_unspecified = true; break; }
                   }
                   if (has_unspecified) {
-                      fprintf(stderr, "[Error] Line %d: Array size not specified for '%s'\n", yylineno, $1);
+                      SEM_ERROR(yylineno, "Array size not specified for '%s'", $1);
                       semantic_error_count++;
                       // Mark the variable type as an error to avoid cascading failures
                       var_type->base_type = TYPE_ERROR;
@@ -869,7 +880,7 @@ class_specifier
     : CLASS IDENTIFIER '{' {
           // Check if class already exists in current scope
           if (class_exists_in_current_scope($2)) {
-              fprintf(stderr, "[Semantic Error] Redefinition of class '%s'\n", $2);
+              SEM_ERROR(@2.first_line, "Redefinition of class '%s'", $2);
               semantic_error_count++;
               current_class = nullptr;
           } else {
@@ -898,7 +909,7 @@ class_specifier
     | CLASS IDENTIFIER ':' inheritance '{' class_member_declarations '}'
         { 
             // TODO: inheritance not yet implemented - treat as simple class for now
-            fprintf(stderr, "[Warning] Line %d: Class inheritance not yet implemented, treating as simple class\n", yylineno);
+            SEM_WARN(@2.first_line, "Class inheritance not yet implemented, treating as simple class");
             
             // For now, create a simple class without inheritance
             current_type = Type();
@@ -929,7 +940,7 @@ class_specifier
               current_type.class_type_ptr = ct;
               if (debug) printf("[CLASS] Using class '%s'\n", $2);
           } else {
-              fprintf(stderr, "[Error] Line %d: class '%s' not defined\n", yylineno, $2);
+              SEM_ERROR(@2.first_line, "Class '%s' not defined", $2);
               semantic_error_count++;
               current_type = Type(TYPE_ERROR);
           }
@@ -986,8 +997,8 @@ class_member
               
               // Validate constructor name matches class name
               if (std::string($1) != current_class->name) {
-                  fprintf(stderr, "[Semantic Error] Line %d: Constructor name '%s' must match class name '%s'\n",
-                          yylineno, $1, current_class->name.c_str());
+                  SEM_ERROR(@1.first_line, "Constructor name '%s' must match class name '%s'",
+                            $1, current_class->name.c_str());
                   semantic_error_count++;
               }
               
@@ -1048,8 +1059,8 @@ class_member
               
               // Validate constructor name matches class name
               if (std::string($1) != current_class->name) {
-                  fprintf(stderr, "[Semantic Error] Line %d: Constructor name '%s' must match class name '%s'\n",
-                          yylineno, $1, current_class->name.c_str());
+                  SEM_ERROR(@1.first_line, "Constructor name '%s' must match class name '%s'",
+                            $1, current_class->name.c_str());
                   semantic_error_count++;
               }
               
@@ -1116,8 +1127,8 @@ class_member
               
               // Validate destructor name matches class name
               if (std::string($2) != current_class->name) {
-                  fprintf(stderr, "[Semantic Error] Line %d: Destructor name '~%s' must match class name '~%s'\n",
-                          yylineno, $2, current_class->name.c_str());
+                  SEM_ERROR(@2.first_line, "Destructor name '~%s' must match class name '~%s'",
+                            $2, current_class->name.c_str());
                   semantic_error_count++;
               }
               
@@ -1193,8 +1204,8 @@ class_member
               if (is_constructor) {
                   // Constructor validation: should have void return type (implicitly)
                   if (method_return_type_backup.base_type != TYPE_VOID) {
-                      fprintf(stderr, "[Semantic Error] Line %d: Constructor '%s' cannot have explicit return type\n",
-                              yylineno, pending_method_name.c_str());
+                      SEM_ERROR(@2.first_line, "Constructor '%s' cannot have explicit return type",
+                                pending_method_name.c_str());
                       semantic_error_count++;
                   }
                   pending_method_return_type = Type(TYPE_VOID); // Force constructor to be void
@@ -1246,8 +1257,8 @@ class_member
                                   current_method_signature->mangled_name.c_str());
               } else {
                   // Error for non-void methods without return
-                  fprintf(stderr, "[Semantic Error] Line %d: Method '%s::%s' with non-void return type must have a return statement\n", 
-                          yylloc.first_line, current_class->name.c_str(), pending_method_name.c_str());
+                  SEM_ERROR(yylloc.first_line, "Method '%s::%s' with non-void return type must have a return statement",
+                            current_class->name.c_str(), pending_method_name.c_str());
                   semantic_error_count++;
               }
           }
@@ -1283,8 +1294,8 @@ class_member
               if (is_constructor) {
                   // Constructor validation: should have void return type (implicitly)
                   if (method_return_type_backup.base_type != TYPE_VOID) {
-                      fprintf(stderr, "[Semantic Error] Line %d: Constructor '%s' cannot have explicit return type\n",
-                              yylineno, pending_method_name.c_str());
+                      SEM_ERROR(@2.first_line, "Constructor '%s' cannot have explicit return type",
+                                pending_method_name.c_str());
                       semantic_error_count++;
                   }
                   pending_method_return_type = Type(TYPE_VOID); // Force constructor to be void
@@ -1345,8 +1356,8 @@ class_member
                                   current_method_signature->mangled_name.c_str());
               } else {
                   // Error for non-void methods without return
-                  fprintf(stderr, "[Semantic Error] Line %d: Method '%s::%s' with non-void return type must have a return statement\n", 
-                          yylloc.first_line, current_class->name.c_str(), pending_method_name.c_str());
+                  SEM_ERROR(yylloc.first_line, "Method '%s::%s' with non-void return type must have a return statement",
+                            current_class->name.c_str(), pending_method_name.c_str());
                   semantic_error_count++;
               }
           }
@@ -1386,8 +1397,8 @@ class_member
               if (is_constructor) {
                   // Constructor validation: should have void return type (implicitly)
                   if (pending_method_return_type.base_type != TYPE_VOID || pending_method_return_type.pointer_level != 0) {
-                      fprintf(stderr, "[Semantic Error] Line %d: Constructor '%s' cannot have explicit return type\n",
-                              yylineno, pending_method_name.c_str());
+                      SEM_ERROR(@3.first_line, "Constructor '%s' cannot have explicit return type",
+                                pending_method_name.c_str());
                       semantic_error_count++;
                   }
                   pending_method_return_type = Type(TYPE_VOID); // Force constructor to be void
@@ -1435,8 +1446,8 @@ class_member
                                   method_type, current_method_signature->mangled_name.c_str());
               } else {
                   // Error for non-void methods without return
-                  fprintf(stderr, "[Semantic Error] Line %d: Method '%s::%s' with non-void return type must have a return statement\n", 
-                          yylloc.first_line, current_class->name.c_str(), pending_method_name.c_str());
+                  SEM_ERROR(yylloc.first_line, "Method '%s::%s' with non-void return type must have a return statement",
+                            current_class->name.c_str(), pending_method_name.c_str());
                   semantic_error_count++;
               }
           }
@@ -1476,8 +1487,8 @@ class_member
               if (is_constructor) {
                   // Constructor validation: should have void return type (implicitly)
                   if (pending_method_return_type.base_type != TYPE_VOID || pending_method_return_type.pointer_level != 0) {
-                      fprintf(stderr, "[Semantic Error] Line %d: Constructor '%s' cannot have explicit return type\n",
-                              yylineno, pending_method_name.c_str());
+                      SEM_ERROR(@3.first_line, "Constructor '%s' cannot have explicit return type",
+                                pending_method_name.c_str());
                       semantic_error_count++;
                   }
                   pending_method_return_type = Type(TYPE_VOID); // Force constructor to be void
@@ -1529,8 +1540,8 @@ class_member
                                   method_type, current_method_signature->mangled_name.c_str());
               } else {
                   // Error for non-void methods without return
-                  fprintf(stderr, "[Semantic Error] Line %d: Method '%s::%s' with non-void return type must have a return statement\n", 
-                          yylloc.first_line, current_class->name.c_str(), pending_method_name.c_str());
+                  SEM_ERROR(yylloc.first_line, "Method '%s::%s' with non-void return type must have a return statement",
+                            current_class->name.c_str(), pending_method_name.c_str());
                   semantic_error_count++;
               }
           }
@@ -1562,7 +1573,7 @@ class_declarator
               member_type->array_dim = current_array_sizes.size();
               member_type->array_sizes = current_array_sizes;
               
-              current_class->add_member($1, member_type);
+              current_class->add_member($1, member_type, @1.first_line);
               if (debug) printf("[CLASS] Added member '%s' of type '%s' to class '%s'\n", 
                                $1, member_type->to_string().c_str(), current_class->name.c_str());
               
@@ -1582,7 +1593,7 @@ class_declarator
           if ($1) {
               Type* member_type = new Type(current_type);
               member_type->pointer_level = current_pointer_level;
-              current_class->add_member($1, member_type);
+              current_class->add_member($1, member_type, @1.first_line);
               if (debug) printf("[CLASS] Added bit-field member '%s' (simplified)\n", $1);
               current_pointer_level = 0;
               current_is_array = false;
@@ -1596,7 +1607,7 @@ struct_or_union_specifier
     : struct_or_union IDENTIFIER '{' {
           // Check if struct already exists in current scope
           if (struct_exists_in_current_scope($2)) {
-              fprintf(stderr, "[Semantic Error] Redefinition of struct '%s'\n", $2);
+              SEM_ERROR(@2.first_line, "Redefinition of struct '%s'", $2);
               semantic_error_count++;
               current_struct = nullptr;
           } else {
@@ -1684,7 +1695,8 @@ struct_or_union_specifier
           if (st) {
               // Check kind matches (struct vs union)
               if (st->is_union != current_is_parsing_union) {
-                  fprintf(stderr, "[Error] Line %d: tag '%s' is a %s, not a %s\n", yylineno, $2, st->is_union ? "union" : "struct", st->is_union ? "struct" : "union");
+                  SEM_ERROR(@2.first_line, "Tag '%s' is a %s, not a %s",
+                            $2, st->is_union ? "union" : "struct", st->is_union ? "struct" : "union");
                   semantic_error_count++;
               }
               current_type = Type();
@@ -1694,7 +1706,7 @@ struct_or_union_specifier
               current_type.struct_type_ptr = st;
               if (debug) printf("[STRUCT] Using struct '%s'\n", $2);
           } else {
-              fprintf(stderr, "[Error] Line %d: struct '%s' not defined\n", yylineno, $2);
+              SEM_ERROR(@2.first_line, "Struct '%s' not defined", $2);
               semantic_error_count++;
               current_type = Type(TYPE_ERROR);
           }
@@ -1733,7 +1745,7 @@ struct_declarator
               member_type->array_dim = current_array_sizes.size();
               member_type->array_sizes = current_array_sizes;
               
-              current_struct->add_member($1, member_type);
+              current_struct->add_member($1, member_type, @1.first_line);
               if (debug) printf("[STRUCT] Added member '%s' of type '%s' to struct '%s'\n", 
                                $1, member_type->to_string().c_str(), current_struct->name.c_str());
               
@@ -1753,7 +1765,7 @@ struct_declarator
           if ($1) {
               Type* member_type = new Type(current_type);
               member_type->pointer_level = current_pointer_level;
-              current_struct->add_member($1, member_type);
+              current_struct->add_member($1, member_type, @1.first_line);
               if (debug) printf("[STRUCT] Added bit-field member '%s' (simplified)\n", $1);
               current_pointer_level = 0;
               current_is_array = false;
@@ -1794,7 +1806,7 @@ enum_specifier
           if (lookup_enum($2)) {
               if (debug) printf("[ENUM] Using enum '%s'\n", $2);
           } else {
-              fprintf(stderr, "[Error] Line %d: enum '%s' not defined\n", yylineno, $2);
+              SEM_ERROR(@2.first_line, "Enum '%s' not defined", $2);
               semantic_error_count++;
           }
           free($2);
@@ -1840,7 +1852,7 @@ enumerator
               } else if ($3->result && $3->result->type == TACOperand::OPERAND_CONSTANT) {
                   value = atoi($3->result->name.c_str());
               } else {
-                  fprintf(stderr, "[Error] Line %d: Enum value must be an integer constant\n", yylineno);
+                  SEM_ERROR(@3.first_line, "Enum value must be an integer constant");
                   semantic_error_count++;
               }
               
@@ -1879,7 +1891,6 @@ type_qualifier
 declarator
 	: pointer direct_declarator        
         { 
-            // FIXED: Capture clean return type before parameter processing can contaminate it
             // Methods use their own separate tracking, so this is safe for functions
             pending_function_return_type = current_type;
             pending_function_return_type.pointer_level = $1;
@@ -1888,7 +1899,6 @@ declarator
         }
 	| direct_declarator               
         { 
-            // FIXED: Capture clean return type before parameter processing can contaminate it
             // Methods use their own separate tracking, so this is safe for functions
             pending_function_return_type = current_type;
             pending_function_return_type.pointer_level = 0;
@@ -1897,7 +1907,6 @@ declarator
         }
 	| '&' direct_declarator           
         { 
-            // FIXED: Capture clean return type before parameter processing can contaminate it
             // Methods use their own separate tracking, so this is safe for functions
             pending_function_return_type = current_type;
             pending_function_return_type.pointer_level = 0;
@@ -1924,11 +1933,11 @@ direct_declarator
 
             // Type check: array dimension must be integer type (not float)
             if (!$3->type) {
-                fprintf(stderr, "[Error] Line %d: Array dimension has no type information\n", yylineno);
+                SEM_ERROR(@3.first_line, "Array dimension has no type information");
                 semantic_error_count++;
                 array_size = 1; // Safe default
             } else if ($3->type->base_type == TYPE_FLOAT) {
-                fprintf(stderr, "[Error] Line %d: Array dimension must be integer, not float\n", yylineno);
+                SEM_ERROR(@3.first_line, "Array dimension must be integer, not float");
                 semantic_error_count++;
                 array_size = 1; // Safe default
             } else {
@@ -1949,7 +1958,7 @@ direct_declarator
                     if ($3->type->is_integer()) {
                         array_size = -1; // Use -1 to mark runtime-sized dimension (VLA)
                     } else {
-                        fprintf(stderr, "[Error] Line %d: Array size must be an integer expression\n", yylineno);
+                        SEM_ERROR(@3.first_line, "Array size must be an integer expression");
                         semantic_error_count++;
                         array_size = 1; // Safe default
                     }
@@ -1959,7 +1968,7 @@ direct_declarator
                 if (array_size > 0) {
                     // OK
                 } else if (array_size == 0) {
-                    fprintf(stderr, "[Error] Line %d: Array size must be positive (got %d)\n", yylineno, array_size);
+                    SEM_ERROR(@3.first_line, "Array size must be positive (got %d)", array_size);
                     semantic_error_count++;
                     array_size = 1; // Safe default
                 }
@@ -1981,7 +1990,6 @@ direct_declarator
         }
         | direct_declarator '(' parameter_type_list ')' {
                     $$ = $1;
-                    // FIXED: Don't save contaminated current_type - it will be captured elsewhere
                     // Just mark that this is a function and save the name
                     pending_function_header = true;
                     if ($1) pending_function_name = std::string($1);
@@ -1989,7 +1997,6 @@ direct_declarator
 
         | direct_declarator '(' ')' {
                     $$ = $1;
-                    // FIXED: Don't save contaminated current_type - it will be captured elsewhere  
                     // Just mark that this is a function and save the name
                     pending_function_header = true;
                     if ($1) pending_function_name = std::string($1);
@@ -1998,15 +2005,23 @@ direct_declarator
 
 
 pointer
-	: '*'
-        { $$ = 1; }
-	| '*' type_qualifier_list
-        { $$ = 1; }
-	| '*' pointer
-        { $$ = 1 + $2; }
-	| '*' type_qualifier_list pointer
+    : '*' type_qualifier_list_opt pointer_opt
         { $$ = 1 + $3; }
-	;
+    ;
+
+type_qualifier_list_opt
+    : /* empty */
+        { $$ = 0; }
+    | type_qualifier_list
+        { $$ = 0; }
+    ;
+
+pointer_opt
+    : /* empty */
+        { $$ = 0; }
+    | pointer
+        { $$ = $1; }
+    ;
 
 type_qualifier_list
 	: type_qualifier
@@ -2025,7 +2040,6 @@ parameter_list
     
 parameter_declaration
     : declaration_specifiers declarator {
-          // FIXED: Backup and restore current_type to prevent function return type contamination
           // $1 sets current_type; $2 is the parameter name
           $$ = $2;
           if ($2) {
@@ -2045,7 +2059,6 @@ parameter_declaration
               pending_function_param_types.push_back(param_type);
               pending_method_param_types.push_back(param_type);  // Also add to method params
               
-              // FIXED: Restore return type - BUT ONLY FOR FUNCTIONS (not methods)
               // Methods have their own return type tracking that should NOT be touched here
               if (!current_class) {
                   current_type = pending_function_return_type;
@@ -2339,7 +2352,6 @@ external_declaration
 function_definition
     : declaration_specifiers declarator declaration_list
         {
-            // FIXED: Use backup of clean return type from before parameter processing
             current_function_return_type = backup_current_type;
             current_function_return_type.pointer_level = current_pointer_level;
             
@@ -2374,8 +2386,8 @@ function_definition
                     if(debug) printf("[Function] Added implicit return for void function '%s'\n", std::string($2).c_str());
                 } else {
                     // Error for non-void functions without return
-                    fprintf(stderr, "[Semantic Error] Line %d: Function '%s' with non-void return type must have a return statement\n", 
-                            yylloc.first_line, std::string($2).c_str());
+                    SEM_ERROR(yylloc.first_line, "Function '%s' with non-void return type must have a return statement",
+                              std::string($2).c_str());
                     semantic_error_count++;
                 }
             }
@@ -2394,7 +2406,6 @@ function_definition
         }
     | declaration_specifiers declarator
         {
-            // FIXED: Use backup of clean return type from before parameter processing
             current_function_return_type = backup_current_type;
             current_function_return_type.pointer_level = current_pointer_level;
             
@@ -2431,8 +2442,8 @@ function_definition
                     if(debug) printf("[Function] Added implicit return for void function '%s'\n", std::string($2).c_str());
                 } else {
                     // Error for non-void functions without return
-                    fprintf(stderr, "[Semantic Error] Line %d: Function '%s' with non-void return type must have a return statement\n", 
-                            yylloc.first_line, std::string($2).c_str());
+                    SEM_ERROR(yylloc.first_line, "Function '%s' with non-void return type must have a return statement",
+                              std::string($2).c_str());
                     semantic_error_count++;
                 }
             }
@@ -2481,8 +2492,8 @@ function_definition
                     if(debug) printf("[Function] Added implicit return for void function '%s'\n", std::string($1).c_str());
                 } else {
                     // Error for non-void functions without return
-                    fprintf(stderr, "[Semantic Error] Line %d: Function '%s' with non-void return type must have a return statement\n", 
-                            yylloc.first_line, std::string($1).c_str());
+                    SEM_ERROR(yylloc.first_line, "Function '%s' with non-void return type must have a return statement",
+                              std::string($1).c_str());
                     semantic_error_count++;
                 }
             }
@@ -2531,8 +2542,8 @@ function_definition
                     if(debug) printf("[Function] Added implicit return for void function '%s'\n", std::string($1).c_str());
                 } else {
                     // Error for non-void functions without return
-                    fprintf(stderr, "[Semantic Error] Line %d: Function '%s' with non-void return type must have a return statement\n", 
-                            yylloc.first_line, std::string($1).c_str());
+                    SEM_ERROR(yylloc.first_line, "Function '%s' with non-void return type must have a return statement",
+                              std::string($1).c_str());
                     semantic_error_count++;
                 }
             }
@@ -2558,7 +2569,7 @@ function_definition
 #include <string.h>
 
 void yyerror(const char *s) {
-    fprintf(stderr, "Error at line %d: %s\n", yylineno, s);
+    PARSE_ERROR(yylineno, "%s", s);
 }
 
 int main(int argc, char *argv[]) {
@@ -2581,7 +2592,7 @@ int main(int argc, char *argv[]) {
     if (argc > 1) {
         FILE *file = fopen(argv[1], "r");
         if (!file) {
-            fprintf(stderr, "Error: Cannot open file %s\n", argv[1]);
+            report_diagnostic(DiagnosticLevel::Error, DiagnosticStage::Parse, -1, "Cannot open file %s", argv[1]);
             return 1;
         }
         extern FILE *yyin;
@@ -2592,23 +2603,25 @@ int main(int argc, char *argv[]) {
 
     if (parse_ok && semantic_error_count == 0) {
         printf("\nâœ“ Parsing successful!\n");
-        // Always print global symbol table before TAC generation
-        if (SymbolTable* gst = get_global_symbol_table()) {
-            printf("\n[Global Symbol Table]\n");
-            gst->print();
+        // Print global symbol table for debugging
+        if (symbol_debug) {
+            if (SymbolTable* gst = get_global_symbol_table()) {
+                printf("\n[Global Symbol Table]\n");
+                gst->print();
+            }
         }
 
-        if(debug) print_function_signatures();
+        if(function_debug) print_function_signatures();
         
         // Print method signatures for debugging
-        print_method_signatures();
+        if(method_debug) print_method_signatures();
 
         tacGen.print();
         
         return 0;
     } else {
         if (semantic_error_count > 0) {
-            fprintf(stderr, "\nâœ— Semantic errors: %d\n", semantic_error_count);
+            report_diagnostic(DiagnosticLevel::Error, DiagnosticStage::Semantic, -1, "Semantic errors: %d", semantic_error_count);
         }
         printf("\nâœ— Parsing failed!\n");
         return 1;

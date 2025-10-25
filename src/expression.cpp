@@ -1,10 +1,24 @@
 #include "expression.h"
 #include "symbol_table.h"
+#include "diagnostics.h"
 #include <iostream>
 #include <sstream>
 #include <string>
 
 using namespace std;
+
+extern int yylineno;
+
+namespace
+{
+int effective_line(int line)
+{
+    return line > 0 ? line : yylineno;
+}
+}
+
+#define SEM_ERROR(line, ...) report_semantic_error(effective_line(line), __VA_ARGS__)
+#define SEM_WARN(line, ...) report_semantic_warning(effective_line(line), __VA_ARGS__)
 
 // ============================================================================
 // Expression Implementation
@@ -199,7 +213,7 @@ void PrimaryExpression::generate_tac()
         Symbol *sym = symbol_ref;
         if (!sym)
         {
-            cerr << "Error: Undefined variable '" << name << "'" << endl;
+            SEM_ERROR(line_no, "Undefined variable '%s'", name.c_str());
             result = new TACOperand(TACOperand::OPERAND_IDENTIFIER, name);
             // Propagate semantic error and mark type as error
             semantic_error_count++;
@@ -245,8 +259,10 @@ void PrimaryExpression::generate_tac()
         type = new Type(TYPE_CHAR);
 
         int ascii_value = (int)char_value;
-        cout << "[AST] Character constant: " << char_repr
-             << " (ASCII: " << ascii_value << ")" << endl;
+        if (debug) {
+            cout << "[AST] Character constant: " << char_repr
+                 << " (ASCII: " << ascii_value << ")" << endl;
+        }
         break;
     }
 
@@ -254,7 +270,9 @@ void PrimaryExpression::generate_tac()
     {
         result = new TACOperand(TACOperand::OPERAND_CONSTANT, std::to_string(float_value));
         type = new Type(TYPE_FLOAT);
-        cout << "[AST] Float constant: " << float_value << endl;
+        if (debug) {
+            cout << "[AST] Float constant: " << float_value << endl;
+        }
         break;
     }
 
@@ -264,7 +282,9 @@ void PrimaryExpression::generate_tac()
         result = new TACOperand(TACOperand::OPERAND_STRING, string_value);
         // String literals have type "pointer to char" (char*)
         type = new Type(TYPE_CHAR, 1); // base_type = char, pointer_level = 1
-        cout << "[AST] String literal: " << string_value << endl;
+        if (debug) {
+            cout << "[AST] String literal: " << string_value << endl;
+        }
         break;
     }
 
@@ -397,8 +417,9 @@ void BinaryExpression::generate_tac()
         else if (!(left->type->is_numeric() || left->type->is_pointer() || left->type->base_type == TYPE_BOOL) ||
                  !(right->type->is_numeric() || right->type->is_pointer() || right->type->base_type == TYPE_BOOL))
         {
-            fprintf(stderr, "[Type Error] Line %d: Logical operator '&&' requires numeric, pointer, or bool operands, got %s and %s\n",
-                    line_no, left->type->to_string().c_str(), right->type->to_string().c_str());
+            SEM_ERROR(line_no,
+                      "Logical operator '&&' requires numeric, pointer, or bool operands, got %s and %s",
+                      left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
         }
@@ -444,8 +465,9 @@ void BinaryExpression::generate_tac()
         else if (!(left->type->is_numeric() || left->type->is_pointer() || left->type->base_type == TYPE_BOOL) ||
                  !(right->type->is_numeric() || right->type->is_pointer() || right->type->base_type == TYPE_BOOL))
         {
-            fprintf(stderr, "[Type Error] Line %d: Logical operator '||' requires numeric, pointer, or bool operands, got %s and %s\n",
-                    line_no, left->type->to_string().c_str(), right->type->to_string().c_str());
+            SEM_ERROR(line_no,
+                      "Logical operator '||' requires numeric, pointer, or bool operands, got %s and %s",
+                      left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
         }
@@ -466,8 +488,7 @@ void BinaryExpression::generate_tac()
     // Check if operands have types
     if (!left->type || !right->type)
     {
-        fprintf(stderr, "[Type Error] Line %d: Missing type information in binary expression\n",
-                line_no);
+        SEM_ERROR(line_no, "Missing type information in binary expression");
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
@@ -591,8 +612,9 @@ void BinaryExpression::generate_tac()
     {
         if (!left->type->is_integer() || !right->type->is_integer())
         {
-            fprintf(stderr, "[Type Error] Line %d: Modulo operator '%%' requires integer operands, got %s and %s\n",
-                    line_no, left->type->to_string().c_str(), right->type->to_string().c_str());
+            SEM_ERROR(line_no,
+                      "Modulo operator '%%' requires integer operands, got %s and %s",
+                      left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
@@ -605,8 +627,9 @@ void BinaryExpression::generate_tac()
     {
         if (!left->type->is_integer() || !right->type->is_integer())
         {
-            fprintf(stderr, "[Type Error] Line %d: Bitwise operator '%s' requires integer operands, got %s and %s\n",
-                    line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
+            SEM_ERROR(line_no,
+                      "Bitwise operator '%s' requires integer operands, got %s and %s",
+                      op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
@@ -618,8 +641,9 @@ void BinaryExpression::generate_tac()
     {
         if (!left->type->is_numeric() || !right->type->is_numeric())
         {
-            fprintf(stderr, "[Type Error] Line %d: Ordering operator '%s' requires numeric operands, got %s and %s\n",
-                    line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
+            SEM_ERROR(line_no,
+                      "Ordering operator '%s' requires numeric operands, got %s and %s",
+                      op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
@@ -648,8 +672,9 @@ void BinaryExpression::generate_tac()
 
         if (!valid)
         {
-            fprintf(stderr, "[Type Error] Line %d: Equality operator '%s' requires compatible types, got %s and %s\n",
-                    line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
+            SEM_ERROR(line_no,
+                      "Equality operator '%s' requires compatible types, got %s and %s",
+                      op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
@@ -662,8 +687,9 @@ void BinaryExpression::generate_tac()
         if (!(left->type->is_numeric() || left->type->is_pointer() || left->type->base_type == TYPE_BOOL) ||
             !(right->type->is_numeric() || right->type->is_pointer() || right->type->base_type == TYPE_BOOL))
         {
-            fprintf(stderr, "[Type Error] Line %d: Logical operator '%s' requires numeric, pointer, or bool operands, got %s and %s\n",
-                    line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
+            SEM_ERROR(line_no,
+                      "Logical operator '%s' requires numeric, pointer, or bool operands, got %s and %s",
+                      op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
@@ -675,8 +701,9 @@ void BinaryExpression::generate_tac()
     {
         if (!left->type->is_numeric() || !right->type->is_numeric())
         {
-            fprintf(stderr, "[Type Error] Line %d: Operator '%s' requires numeric operands, got %s and %s\n",
-                    line_no, op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
+            SEM_ERROR(line_no,
+                      "Operator '%s' requires numeric operands, got %s and %s",
+                      op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
@@ -936,8 +963,9 @@ void BinaryExpression::handle_pointer_minus_pointer(Expression *left_ptr, Expres
     if (left_type_decayed.base_type != right_type_decayed.base_type ||
         left_type_decayed.pointer_level != right_type_decayed.pointer_level)
     {
-        fprintf(stderr, "[Type Error] Line %d: Incompatible pointer types in subtraction: %s - %s\n",
-                line_no, left_ptr->type->to_string().c_str(), right_ptr->type->to_string().c_str());
+        SEM_ERROR(line_no,
+                  "Incompatible pointer types in subtraction: %s - %s",
+                  left_ptr->type->to_string().c_str(), right_ptr->type->to_string().c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0"); // Dummy result to prevent segfault
@@ -1055,8 +1083,7 @@ void UnaryExpression::generate_tac()
     // Check if operand has a type
     if (!expr->type)
     {
-        fprintf(stderr, "[Type Error] Line %d: Missing type information in unary expression\n",
-                line_no);
+        SEM_ERROR(line_no, "Missing type information in unary expression");
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
@@ -1135,8 +1162,7 @@ void UnaryExpression::generate_tac()
         // Check that operand is an lvalue (can take address)
         if (!expr->result || expr->result->type != TACOperand::OPERAND_IDENTIFIER)
         {
-            fprintf(stderr, "[Type Error] Line %d: Cannot take address of non-lvalue (not a variable)\n",
-                    line_no);
+            SEM_ERROR(line_no, "Cannot take address of non-lvalue (not a variable)");
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
@@ -1162,8 +1188,8 @@ void UnaryExpression::generate_tac()
         // Check that operand is a pointer or array
         if (!expr->type->is_pointer() && !expr->type->is_array)
         {
-            fprintf(stderr, "[Type Error] Line %d: Cannot dereference non-pointer type %s\n",
-                    line_no, expr->type->to_string().c_str());
+            SEM_ERROR(line_no, "Cannot dereference non-pointer type %s",
+                      expr->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
@@ -1208,8 +1234,8 @@ void UnaryExpression::generate_tac()
         if (!expr->type->is_numeric())
         {
             const char *op_name = (op == TAC_UMINUS) ? "-" : "+";
-            fprintf(stderr, "[Type Error] Line %d: Unary '%s' requires numeric operand, got %s\n",
-                    line_no, op_name, expr->type->to_string().c_str());
+            SEM_ERROR(line_no, "Unary '%s' requires numeric operand, got %s",
+                      op_name, expr->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
@@ -1220,8 +1246,8 @@ void UnaryExpression::generate_tac()
     {
         if (!expr->type->is_integer())
         {
-            fprintf(stderr, "[Type Error] Line %d: Bitwise NOT '~' requires integer operand, got %s\n",
-                    line_no, expr->type->to_string().c_str());
+            SEM_ERROR(line_no, "Bitwise NOT '~' requires integer operand, got %s",
+                      expr->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
@@ -1232,8 +1258,9 @@ void UnaryExpression::generate_tac()
     {
         if (!expr->type->is_numeric() && !expr->type->is_pointer() && expr->type->base_type != TYPE_BOOL)
         {
-            fprintf(stderr, "[Type Error] Line %d: Logical NOT '!' requires numeric, pointer, or bool operand, got %s\n",
-                    line_no, expr->type->to_string().c_str());
+            SEM_ERROR(line_no,
+                      "Logical NOT '!' requires numeric, pointer, or bool operand, got %s",
+                      expr->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
@@ -1246,8 +1273,9 @@ void UnaryExpression::generate_tac()
 
         if (!expr->type->is_numeric() && !expr->type->is_pointer())
         {
-            fprintf(stderr, "[Type Error] Line %d: Prefix '%s' requires numeric or pointer operand, got %s\n",
-                    line_no, op_name, expr->type->to_string().c_str());
+            SEM_ERROR(line_no,
+                      "Prefix '%s' requires numeric or pointer operand, got %s",
+                      op_name, expr->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
@@ -1257,8 +1285,7 @@ void UnaryExpression::generate_tac()
         // expr->result should be an OPERAND_IDENTIFIER, not a constant or temp
         if (!expr->result || expr->result->type != TACOperand::OPERAND_IDENTIFIER)
         {
-            fprintf(stderr, "[Type Error] Line %d: Prefix '%s' requires an lvalue (modifiable variable)\n",
-                    line_no, op_name);
+            SEM_ERROR(line_no, "Prefix '%s' requires an lvalue (modifiable variable)", op_name);
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
@@ -1365,10 +1392,10 @@ void PostfixExpression::generate_tac()
 
     if (!expr->type->is_numeric() && !expr->type->is_pointer())
     {
-        fprintf(stderr, "[Type Error] Line %d: Postfix %s requires numeric or pointer type, got %s\n",
-                line_no,
-                (op == TAC_POST_INC ? "++" : "--"),
-                expr->type->to_string().c_str());
+    SEM_ERROR(line_no,
+          "Postfix %s requires numeric or pointer type, got %s",
+          (op == TAC_POST_INC ? "++" : "--"),
+          expr->type->to_string().c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
@@ -1454,8 +1481,7 @@ void AssignmentExpression::generate_tac()
     // Check if RHS has a type
     if (!rhs->type)
     {
-        fprintf(stderr, "[Type Error] Line %d: Missing type information in assignment\n",
-                line_no);
+        SEM_ERROR(line_no, "Missing type information in assignment");
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
@@ -1497,8 +1523,7 @@ void AssignmentExpression::generate_tac()
     Symbol *sym = lhs_symbol;
     if (!sym && !is_member_assignment)
     {
-        fprintf(stderr, "[Type Error] Line %d: Undefined variable '%s'\n",
-                line_no, lhs_name.c_str());
+        SEM_ERROR(line_no, "Undefined variable '%s'", lhs_name.c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
@@ -1531,14 +1556,16 @@ void AssignmentExpression::generate_tac()
         // else: one is struct, one is not -> incompatible
     }
     // Second check: array-to-pointer decay
-    // An array T[] can be assigned to a pointer T*
+    // A single-dimensional array T[N] can be assigned to a pointer to T
     else if (rhs->type->is_array &&
-             lhs_type.pointer_level == 1 &&
+             lhs_type.pointer_level > 0 &&
              !lhs_type.is_array &&
-             lhs_type.base_type == rhs->type->base_type)
+             lhs_type.base_type == rhs->type->base_type &&
+             rhs->type->array_dim == 1 &&
+             lhs_type.pointer_level == (rhs->type->pointer_level + 1))
     {
         compatible = true;
-        // Array automatically decays to pointer to first element
+        // Single-dimensional array automatically decays to pointer to first element
     }
     // Null constant check: null can be assigned to any pointer type
     else if (lhs_type.pointer_level > 0 &&
@@ -1553,16 +1580,17 @@ void AssignmentExpression::generate_tac()
              lhs_type.is_numeric() && rhs->type->is_numeric())
     {
         // Allow implicit numeric conversions but warn
-        compatible = true;
-        fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in assignment from %s to %s\n",
-                line_no, rhs->type->to_string().c_str(), lhs_type.to_string().c_str());
+    compatible = true;
+    SEM_WARN(line_no,
+         "Implicit conversion in assignment from %s to %s",
+         rhs->type->to_string().c_str(), lhs_type.to_string().c_str());
     }
 
     // If not compatible, it's an error
     if (!compatible)
     {
-        fprintf(stderr, "[Type Error] Line %d: Cannot assign %s to %s\n",
-                line_no, rhs->type->to_string().c_str(), lhs_type.to_string().c_str());
+    SEM_ERROR(line_no, "Cannot assign %s to %s",
+          rhs->type->to_string().c_str(), lhs_type.to_string().c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
@@ -1747,7 +1775,7 @@ void GeneralAssignmentExpression::generate_tac()
     // Type checking
     if (!lhs->type || !rhs->type)
     {
-        fprintf(stderr, "[Type Error] Line %d: Missing type information in assignment\n", line_no);
+        SEM_ERROR(line_no, "Missing type information in assignment");
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
@@ -1788,11 +1816,12 @@ void GeneralAssignmentExpression::generate_tac()
                 compatible = true;
             }
         }
-        // Array-to-pointer decay
+        // Array-to-pointer decay (single-dimensional only)
         else if (rhs->type->is_array &&
                  lhs->type->pointer_level == 1 &&
                  !lhs->type->is_array &&
-                 lhs->type->base_type == rhs->type->base_type)
+                 lhs->type->base_type == rhs->type->base_type &&
+                 rhs->type->array_dim == 1)
         {
             compatible = true;
         }
@@ -1808,14 +1837,14 @@ void GeneralAssignmentExpression::generate_tac()
                  lhs->type->is_numeric() && rhs->type->is_numeric())
         {
             compatible = true;
-            fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in assignment from %s to %s\n",
-                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+            SEM_WARN(line_no, "Implicit conversion in assignment from %s to %s",
+                     rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
         }
 
         if (!compatible)
         {
-            fprintf(stderr, "[Type Error] Line %d: Cannot assign %s to %s\n",
-                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+            SEM_ERROR(line_no, "Cannot assign %s to %s",
+                      rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
@@ -1859,11 +1888,12 @@ void GeneralAssignmentExpression::generate_tac()
                 compatible = true;
             }
         }
-        // Array-to-pointer decay
+        // Array-to-pointer decay (single-dimensional only)
         else if (rhs->type->is_array &&
                  lhs->type->pointer_level == 1 &&
                  !lhs->type->is_array &&
-                 lhs->type->base_type == rhs->type->base_type)
+                 lhs->type->base_type == rhs->type->base_type &&
+                 rhs->type->array_dim == 1)
         {
             compatible = true;
         }
@@ -1879,14 +1909,14 @@ void GeneralAssignmentExpression::generate_tac()
                  lhs->type->is_numeric() && rhs->type->is_numeric())
         {
             compatible = true;
-            fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in assignment from %s to %s\n",
-                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+            SEM_WARN(line_no, "Implicit conversion in assignment from %s to %s",
+                     rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
         }
 
         if (!compatible)
         {
-            fprintf(stderr, "[Type Error] Line %d: Cannot assign %s to %s\n",
-                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+            SEM_ERROR(line_no, "Cannot assign %s to %s",
+                      rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
@@ -1946,11 +1976,12 @@ void GeneralAssignmentExpression::generate_tac()
                 compatible = true;
             }
         }
-        // Array-to-pointer decay
+        // Array-to-pointer decay (single-dimensional only)
         else if (rhs->type->is_array &&
                  lhs->type->pointer_level == 1 &&
                  !lhs->type->is_array &&
-                 lhs->type->base_type == rhs->type->base_type)
+                 lhs->type->base_type == rhs->type->base_type &&
+                 rhs->type->array_dim == 1)
         {
             compatible = true;
         }
@@ -1961,19 +1992,19 @@ void GeneralAssignmentExpression::generate_tac()
             compatible = true;
         }
         // Numeric conversions (only for non-pointer types)
-        else if (lhs->type->pointer_level == 0 && rhs->type->pointer_level == 0 &&
-                 !lhs->type->is_array && !rhs->type->is_array &&
-                 lhs->type->is_numeric() && rhs->type->is_numeric())
-        {
-            compatible = true;
-            fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in assignment from %s to %s\n",
-                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
-        }
+                else if (lhs->type->pointer_level == 0 && rhs->type->pointer_level == 0 &&
+                                 !lhs->type->is_array && !rhs->type->is_array &&
+                                 lhs->type->is_numeric() && rhs->type->is_numeric())
+                {
+                        compatible = true;
+                        SEM_WARN(line_no, "Implicit conversion in assignment from %s to %s",
+                                         rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+                }
 
-        if (!compatible)
-        {
-            fprintf(stderr, "[Type Error] Line %d: Cannot assign %s to %s\n",
-                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+                if (!compatible)
+                {
+                        SEM_ERROR(line_no, "Cannot assign %s to %s",
+                                            rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
@@ -1988,7 +2019,7 @@ void GeneralAssignmentExpression::generate_tac()
             // Check if RHS result is valid
             if (!rhs->result)
             {
-                fprintf(stderr, "[Error] Line %d: RHS result is null in member assignment\n", line_no);
+                SEM_ERROR(line_no, "RHS result is null in member assignment");
                 semantic_error_count++;
             }
             else
@@ -2000,7 +2031,7 @@ void GeneralAssignmentExpression::generate_tac()
         }
         else
         {
-            fprintf(stderr, "[Error] Line %d: Member LHS code size too small: %zu\n", line_no, member_lhs->code.size());
+            SEM_ERROR(line_no, "Member LHS code size too small: %zu", member_lhs->code.size());
             semantic_error_count++;
         }
 
@@ -2035,11 +2066,12 @@ void GeneralAssignmentExpression::generate_tac()
                 compatible = true;
             }
         }
-        // Array-to-pointer decay
+        // Array-to-pointer decay (single-dimensional only)
         else if (rhs->type->is_array &&
                  lhs->type->pointer_level == 1 &&
                  !lhs->type->is_array &&
-                 lhs->type->base_type == rhs->type->base_type)
+                 lhs->type->base_type == rhs->type->base_type &&
+                 rhs->type->array_dim == 1)
         {
             compatible = true;
         }
@@ -2055,14 +2087,14 @@ void GeneralAssignmentExpression::generate_tac()
                  lhs->type->is_numeric() && rhs->type->is_numeric())
         {
             compatible = true;
-            fprintf(stderr, "[Type Warning] Line %d: Implicit conversion in assignment from %s to %s\n",
-                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+            SEM_WARN(line_no, "Implicit conversion in assignment from %s to %s",
+                     rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
         }
 
         if (!compatible)
         {
-            fprintf(stderr, "[Type Error] Line %d: Cannot assign %s to %s\n",
-                    line_no, rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+            SEM_ERROR(line_no, "Cannot assign %s to %s",
+                      rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
@@ -2086,7 +2118,7 @@ void GeneralAssignmentExpression::generate_tac()
     else
     {
         // Other complex lvalues not yet supported
-        fprintf(stderr, "[Error] Line %d: Complex assignment LHS type not yet supported\n", line_no);
+        SEM_ERROR(line_no, "Complex assignment LHS type not yet supported");
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
     }
@@ -2130,7 +2162,7 @@ void ArrayAccessExpression::generate_tac()
     // Type checking
     if (!array->type || !index->type)
     {
-        fprintf(stderr, "[Type Error] Line %d: Missing type information in array access\n", line_no);
+        SEM_ERROR(line_no, "Missing type information in array access");
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
@@ -2156,8 +2188,8 @@ void ArrayAccessExpression::generate_tac()
             name_hint = std::string(" '") + prim->name + std::string("'");
         }
 
-        fprintf(stderr, "[Type Error] Line %d: Subscripted value is not an array or pointer%s (type: %s)\n",
-                err_line, name_hint.c_str(), array->type->to_string().c_str());
+      SEM_ERROR(err_line, "Subscripted value is not an array or pointer%s (type: %s)",
+            name_hint.c_str(), array->type->to_string().c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
@@ -2166,7 +2198,7 @@ void ArrayAccessExpression::generate_tac()
     // Check that index is an integer type
     if (!index->type->is_integer())
     {
-        fprintf(stderr, "[Type Error] Line %d: Array subscript must be an integer type\n", line_no);
+        SEM_ERROR(line_no, "Array subscript must be an integer type");
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
@@ -2321,7 +2353,7 @@ void CallExpression::generate_tac()
     int match = find_function_match(func_name, argTypes);
     if (match < 0)
     {
-        fprintf(stderr, "[Type Error] Line %d: No matching function '%s' for given argument types\n", line_no, func_name.c_str());
+        SEM_ERROR(line_no, "No matching function '%s' for given argument types", func_name.c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         // Still emit params and a call to keep TAC flow, with no result
@@ -2382,8 +2414,7 @@ void MethodCallExpression::generate_tac()
     // 2. Determine the class type of the object
     if (!object->type)
     {
-        fprintf(stderr, "[Type Error] Line %d: Object has no type information for method call '%s'\n", 
-                line_no, method_name.c_str());
+        SEM_ERROR(line_no, "Object has no type information for method call '%s'", method_name.c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
@@ -2398,8 +2429,8 @@ void MethodCallExpression::generate_tac()
     
     if (!object->type->is_class)
     {
-        fprintf(stderr, "[Type Error] Line %d: Cannot call method '%s' on non-class type '%s'\n", 
-                line_no, method_name.c_str(), object->type->to_string().c_str());
+        SEM_ERROR(line_no, "Cannot call method '%s' on non-class type '%s'",
+                  method_name.c_str(), object->type->to_string().c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
@@ -2451,8 +2482,8 @@ void MethodCallExpression::generate_tac()
         if (argTypes.empty())
             argTypeStr = "void";
         
-        fprintf(stderr, "[Type Error] Line %d: No matching method '%s::%s(%s)'\n",
-                line_no, class_name.c_str(), method_name.c_str(), argTypeStr.c_str());
+    SEM_ERROR(line_no, "No matching method '%s::%s(%s)'",
+          class_name.c_str(), method_name.c_str(), argTypeStr.c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
@@ -2548,8 +2579,8 @@ void MemberAccessExpression::generate_tac()
     // Check if the expression is a struct or class type
     if (!struct_expr->type || ((!struct_expr->type->is_struct && !struct_expr->type->is_class) && struct_expr->type->pointer_level == 0))
     {
-        fprintf(stderr, "[Type Error] Line %d: Member access requires a struct or class type, got '%s'\n",
-                line_no, struct_expr->type ? struct_expr->type->to_string().c_str() : "unknown");
+        SEM_ERROR(line_no, "Member access requires a struct or class type, got '%s'",
+                  struct_expr->type ? struct_expr->type->to_string().c_str() : "unknown");
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         result = new TACOperand();
@@ -2568,8 +2599,8 @@ void MemberAccessExpression::generate_tac()
         }
         if (!ct)
         {
-            fprintf(stderr, "[Type Error] Line %d: Class type '%s' not found\n",
-                    line_no, struct_expr->type->class_name.c_str());
+            SEM_ERROR(line_no, "Class type '%s' not found",
+                      struct_expr->type->class_name.c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             result = new TACOperand();
@@ -2579,8 +2610,8 @@ void MemberAccessExpression::generate_tac()
         // Check if member exists
         if (!ct->has_member(member_name))
         {
-            fprintf(stderr, "[Type Error] Line %d: Class '%s' has no member named '%s'\n",
-                    line_no, ct->name.c_str(), member_name.c_str());
+            SEM_ERROR(line_no, "Class '%s' has no member named '%s'",
+                      ct->name.c_str(), member_name.c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             result = new TACOperand();
@@ -2633,8 +2664,8 @@ void MemberAccessExpression::generate_tac()
     }
     if (!st)
     {
-        fprintf(stderr, "[Type Error] Line %d: Struct type '%s' not found\n",
-                line_no, struct_expr->type->struct_name.c_str());
+        SEM_ERROR(line_no, "Struct type '%s' not found",
+                  struct_expr->type->struct_name.c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         result = new TACOperand();
@@ -2644,8 +2675,8 @@ void MemberAccessExpression::generate_tac()
     // Check if member exists
     if (!st->has_member(member_name))
     {
-        fprintf(stderr, "[Type Error] Line %d: Struct '%s' has no member named '%s'\n",
-                line_no, st->name.c_str(), member_name.c_str());
+        SEM_ERROR(line_no, "Struct '%s' has no member named '%s'",
+                  st->name.c_str(), member_name.c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         result = new TACOperand();
@@ -2714,8 +2745,8 @@ void MemberAccessPtrExpression::generate_tac()
     // Check if the expression is a pointer to struct or class
     if (!ptr_expr->type || ((!ptr_expr->type->is_struct && !ptr_expr->type->is_class) || ptr_expr->type->pointer_level == 0))
     {
-        fprintf(stderr, "[Type Error] Line %d: Pointer member access requires a pointer to struct or class, got '%s'\n",
-                line_no, ptr_expr->type ? ptr_expr->type->to_string().c_str() : "unknown");
+        SEM_ERROR(line_no, "Pointer member access requires a pointer to struct or class, got '%s'",
+                  ptr_expr->type ? ptr_expr->type->to_string().c_str() : "unknown");
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         result = new TACOperand();
@@ -2734,8 +2765,8 @@ void MemberAccessPtrExpression::generate_tac()
         }
         if (!ct)
         {
-            fprintf(stderr, "[Type Error] Line %d: Class type '%s' not found\n",
-                    line_no, ptr_expr->type->class_name.c_str());
+            SEM_ERROR(line_no, "Class type '%s' not found",
+                      ptr_expr->type->class_name.c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             result = new TACOperand();
@@ -2745,8 +2776,8 @@ void MemberAccessPtrExpression::generate_tac()
         // Check if member exists
         if (!ct->has_member(member_name))
         {
-            fprintf(stderr, "[Type Error] Line %d: Class '%s' has no member named '%s'\n",
-                    line_no, ct->name.c_str(), member_name.c_str());
+            SEM_ERROR(line_no, "Class '%s' has no member named '%s'",
+                      ct->name.c_str(), member_name.c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             result = new TACOperand();
@@ -2788,8 +2819,8 @@ void MemberAccessPtrExpression::generate_tac()
     }
     if (!st)
     {
-        fprintf(stderr, "[Type Error] Line %d: Struct type '%s' not found\n",
-                line_no, ptr_expr->type->struct_name.c_str());
+        SEM_ERROR(line_no, "Struct type '%s' not found",
+                  ptr_expr->type->struct_name.c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         result = new TACOperand();
@@ -2799,8 +2830,8 @@ void MemberAccessPtrExpression::generate_tac()
     // Check if member exists
     if (!st->has_member(member_name))
     {
-        fprintf(stderr, "[Type Error] Line %d: Struct '%s' has no member named '%s'\n",
-                line_no, st->name.c_str(), member_name.c_str());
+        SEM_ERROR(line_no, "Struct '%s' has no member named '%s'",
+                  st->name.c_str(), member_name.c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         result = new TACOperand();

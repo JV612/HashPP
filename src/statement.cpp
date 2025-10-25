@@ -4,8 +4,22 @@
 #include <algorithm>
 #include <iostream>
 #include <cstdio>
+#include "diagnostics.h"
 
 using namespace std;
+
+extern int yylineno;
+
+namespace
+{
+int effective_line(int line)
+{
+    return line > 0 ? line : yylineno;
+}
+}
+
+#define SEM_ERROR(line, ...) report_semantic_error(effective_line(line), __VA_ARGS__)
+#define SEM_WARN(line, ...) report_semantic_warning(effective_line(line), __VA_ARGS__)
 
 // ============================================================================
 // Static variable to track loop nesting depth for break/continue validation
@@ -613,7 +627,7 @@ void BreakStatement::generate_tac()
     // Validate that break is inside a loop or switch
     if (loop_depth == 0)
     {
-        fprintf(stderr, "[Error] Line %d: 'break' statement not within loop or switch\n", line_no);
+        SEM_ERROR(line_no, "'break' statement not within loop or switch");
         semantic_error_count++;
         return;
     }
@@ -650,7 +664,7 @@ void ContinueStatement::generate_tac()
     // Validate that continue is inside a loop
     if (loop_depth == 0)
     {
-        fprintf(stderr, "[Error] Line %d: 'continue' statement not within loop\n", line_no);
+        SEM_ERROR(line_no, "'continue' statement not within loop");
         semantic_error_count++;
         return;
     }
@@ -876,8 +890,7 @@ void CaseLabel::generate_tac()
     // Type checking: case value must be a constant integer or character
     if (case_value->type && !case_value->type->is_integer())
     {
-        fprintf(stderr, "[Type Error] Line %d: Case label must be an integer or character constant\n",
-                line_no);
+        SEM_ERROR(line_no, "Case label must be an integer or character constant");
         semantic_error_count++;
     }
 
@@ -996,13 +1009,13 @@ int SwitchStatement::extract_constant_value(Expression *expr)
         }
         catch (...)
         {
-            fprintf(stderr, "[Error] Line %d: Case value must be a constant integer\n", line_no);
+            SEM_ERROR(line_no, "Case value must be a constant integer");
             semantic_error_count++;
             return 0;
         }
     }
 
-    fprintf(stderr, "[Error] Line %d: Case value must be a constant expression\n", line_no);
+    SEM_ERROR(line_no, "Case value must be a constant expression");
     semantic_error_count++;
     return 0;
 }
@@ -1192,8 +1205,7 @@ void SwitchStatement::generate_tac()
 
     if (!switch_expr->type || !switch_expr->type->is_integer())
     {
-        fprintf(stderr, "[Type Error] Line %d: Switch expression must be an integer type\n",
-                line_no);
+        SEM_ERROR(line_no, "Switch expression must be an integer type");
         semantic_error_count++;
         return;
     }
@@ -1483,7 +1495,7 @@ void ReturnStatement::generate_tac()
     // Check if we're inside a function (current_function_return_type should be set)
     if (current_function_return_type.is_error())
     {
-        fprintf(stderr, "[Error] Line %d: Return statement outside of function\n", line_no);
+        SEM_ERROR(line_no, "Return statement outside of function");
         semantic_error_count++;
         return;
     }
@@ -1491,7 +1503,7 @@ void ReturnStatement::generate_tac()
     // Case 1: void function with return expression
     if (current_function_return_type.base_type == TYPE_VOID && expr != nullptr)
     {
-        fprintf(stderr, "[Error] Line %d: void function cannot return a value\n", line_no);
+        SEM_ERROR(line_no, "void function cannot return a value");
         semantic_error_count++;
         return;
     }
@@ -1499,7 +1511,7 @@ void ReturnStatement::generate_tac()
     // Case 2: non-void function without return expression
     if (current_function_return_type.base_type != TYPE_VOID && expr == nullptr)
     {
-        fprintf(stderr, "[Error] Line %d: non-void function must return a value\n", line_no);
+        SEM_ERROR(line_no, "non-void function must return a value");
         semantic_error_count++;
         return;
     }
@@ -1575,15 +1587,15 @@ void ReturnStatement::generate_tac()
 
             if (!compatible)
             {
-                fprintf(stderr, "[Type Error] Line %d: Cannot return type '%s' from function expecting '%s'\n",
-                        line_no, exprT.to_string().c_str(), retT.to_string().c_str());
+                SEM_ERROR(line_no, "Cannot return type '%s' from function expecting '%s'",
+                          exprT.to_string().c_str(), retT.to_string().c_str());
                 semantic_error_count++;
             }
         }
         else
         {
             // Expression failed to produce a type (likely undefined identifier)
-            fprintf(stderr, "[Type Error] Line %d: return expression has no type (undefined or invalid)\n", line_no);
+            SEM_ERROR(line_no, "return expression has no type (undefined or invalid)");
             semantic_error_count++;
         }
         // Emit TAC only if we have a valid result operand
@@ -1661,7 +1673,6 @@ void GotoStatement::generate_tac()
 // LabelStatement Implementation
 // ============================================================================
 
-// Fixed LabelStatement constructor
 LabelStatement::LabelStatement(const std::string &label, Statement *stmt)
     : label_name(label), statement(stmt)
 {

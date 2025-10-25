@@ -14,6 +14,7 @@
 #include "expression.h"     // NEW: Expression AST nodes
 #include "statement.h"      // NEW: Statement AST nodes
 #include "declaration.h"    // NEW: Declaration AST nodes
+#include "diagnostics.h"
 
 #include "ansic.tab.h"  
 
@@ -293,11 +294,12 @@ ESCAPE      \\[abfnrtv0\\'\\"]
 {WS}        { /* Skip whitespace */ }
 {NEWLINE}   { yylineno++; }
 
-.           { fprintf(stderr, "Unknown character: %s at line %d\n", yytext, yylineno); }
+.           { report_lexical_error(yylineno, "Unknown character '%s'", yytext); }
 
 %%
 
 void print_token_table() {
+    if (!debug) return;
     printf("\n%-10s %-15s %-15s %-10s\n", "Line", "Lexeme", "Token", "Type");
     printf("--------------------------------------------------------\n");
     for (auto &t : token_table) {
