@@ -262,8 +262,9 @@ bool struct_exists_in_current_scope(const std::string &struct_name)
 // ============================================================================
 
 ClassType *current_class = nullptr;
+AccessLevel current_access_level = ACCESS_PUBLIC;
 
-void ClassType::add_member(const std::string &member_name, Type *member_type, int line)
+void ClassType::add_member(const std::string &member_name, Type *member_type, int line, AccessLevel access)
 {
     // Check for duplicate member names
     if (has_member(member_name))
@@ -275,6 +276,7 @@ void ClassType::add_member(const std::string &member_name, Type *member_type, in
         return;
     }
     members.push_back(std::make_pair(member_name, member_type));
+    member_access[member_name] = access;
 }
 
 int ClassType::get_member_offset(const std::string &member_name) const
@@ -309,6 +311,16 @@ bool ClassType::has_member(const std::string &member_name) const
         }
     }
     return false;
+}
+
+AccessLevel ClassType::get_member_access(const std::string &member_name) const
+{
+    auto it = member_access.find(member_name);
+    if (it != member_access.end())
+    {
+        return it->second;
+    }
+    return ACCESS_PUBLIC; // Default for safety
 }
 
 void ClassType::finalize()
@@ -1211,7 +1223,7 @@ void print_function_signatures()
 
 MethodSignature *register_method(const std::string &class_name, const std::string &method_name,
                                   const std::vector<Type> &params, const Type &retType, 
-                                  bool is_constructor, bool is_destructor)
+                                  bool is_constructor, bool is_destructor, AccessLevel access)
 {
     // Constructor/Destructor validation
     if (is_constructor) {
@@ -1282,6 +1294,7 @@ MethodSignature *register_method(const std::string &class_name, const std::strin
     new_method.params = params;
     new_method.returnType = retType;
     new_method.MethodID = max_id;
+    new_method.access_level = access;
     new_method.is_constructor = is_constructor;
     new_method.is_destructor = is_destructor;
     

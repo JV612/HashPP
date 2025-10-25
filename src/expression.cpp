@@ -2618,6 +2618,21 @@ void MemberAccessExpression::generate_tac()
             return;
         }
 
+        // Check access permissions
+        AccessLevel member_access = ct->get_member_access(member_name);
+        bool inside_same_class = (current_class && current_class->name == ct->name);
+        
+        if (member_access != ACCESS_PUBLIC && !inside_same_class)
+        {
+            const char* access_str = (member_access == ACCESS_PRIVATE) ? "private" : "protected";
+            SEM_ERROR(line_no, "Cannot access %s member '%s' of class '%s'",
+                      access_str, member_name.c_str(), ct->name.c_str());
+            semantic_error_count++;
+            type = new Type(TYPE_ERROR);
+            result = new TACOperand();
+            return;
+        }
+
         // Get member offset and type
         int offset = ct->get_member_offset(member_name);
         Type *member_type = ct->get_member_type(member_name);
@@ -2778,6 +2793,21 @@ void MemberAccessPtrExpression::generate_tac()
         {
             SEM_ERROR(line_no, "Class '%s' has no member named '%s'",
                       ct->name.c_str(), member_name.c_str());
+            semantic_error_count++;
+            type = new Type(TYPE_ERROR);
+            result = new TACOperand();
+            return;
+        }
+
+        // Check access permissions
+        AccessLevel member_access = ct->get_member_access(member_name);
+        bool inside_same_class = (current_class && current_class->name == ct->name);
+        
+        if (member_access != ACCESS_PUBLIC && !inside_same_class)
+        {
+            const char* access_str = (member_access == ACCESS_PRIVATE) ? "private" : "protected";
+            SEM_ERROR(line_no, "Cannot access %s member '%s' of class '%s'",
+                      access_str, member_name.c_str(), ct->name.c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             result = new TACOperand();

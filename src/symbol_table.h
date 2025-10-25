@@ -19,6 +19,13 @@ enum PrimitiveType
     TYPE_ERROR
 };
 
+// Access control for class members and methods
+enum AccessLevel {
+    ACCESS_PUBLIC,
+    ACCESS_PRIVATE,
+    ACCESS_PROTECTED
+};
+
 // ============================================================================
 // Enum Type Support
 // ============================================================================
@@ -51,6 +58,7 @@ int get_enum_member_value(const std::string &identifier);
 // ============================================================================
 class Type; // Forward declaration for StructType
 struct MethodSignature; // Forward declaration for ClassType
+class ClassType; // Forward declaration
 
 // ============================================================================
 // Struct/Union Type Support
@@ -93,12 +101,17 @@ extern StructType *current_struct;
 // Class Type Support
 // ============================================================================
 
+// Global variables for class access control
+extern ClassType *current_class;
+extern AccessLevel current_access_level;
+
 class ClassType
 {
 public:
     std::string name;                                    // Name of the class (e.g., "Point")
     std::vector<std::pair<std::string, Type *>> members; // Ordered list of data members (name, type)
     std::unordered_map<std::string, int> member_offsets; // member_name -> byte offset
+    std::unordered_map<std::string, AccessLevel> member_access; // member_name -> access level
     int total_size;                                      // Total size in bytes
     
     // Method support
@@ -114,10 +127,11 @@ public:
         // Note: methods are managed by global method_signatures vector
     }
 
-    void add_member(const std::string &member_name, Type *member_type, int line);
+    void add_member(const std::string &member_name, Type *member_type, int line, AccessLevel access = ACCESS_PUBLIC);
     int get_member_offset(const std::string &member_name) const;
     Type *get_member_type(const std::string &member_name) const;
     bool has_member(const std::string &member_name) const;
+    AccessLevel get_member_access(const std::string &member_name) const;
     void finalize(); // Calculate offsets and total size (sequential layout)
     
     // Method management
@@ -305,6 +319,7 @@ struct MethodSignature
     std::vector<Type> params; // parameter types (excluding implicit 'this' pointer)
     Type returnType;          // method return type
     int MethodID;             // unique method ID for overloading
+    AccessLevel access_level; // access level (public/private/protected)
     
     // Special method flags
     bool is_constructor;      // true if this is a constructor
@@ -337,7 +352,7 @@ FunctionSignature *register_function(const std::string &name, const std::vector<
 // Register a method (class_name + method_name + params + return type)
 MethodSignature *register_method(const std::string &class_name, const std::string &method_name, 
                                   const std::vector<Type> &params, const Type &retType, 
-                                  bool is_constructor = false, bool is_destructor = false);
+                                  bool is_constructor = false, bool is_destructor = false, AccessLevel access = ACCESS_PUBLIC);
 
 // Find function by name and arg type list; returns index or -1
 int find_function_match(const std::string &name, const std::vector<Type> &argTypes);

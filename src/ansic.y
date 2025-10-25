@@ -887,6 +887,7 @@ class_specifier
               // Create new class type
               current_class = new ClassType($2);
               register_class_in_scope($2, current_class);
+              current_access_level = ACCESS_PUBLIC; // Classes start with public access
               class_finalized_for_methods = false;  // Reset flag for new class
               if (debug) printf("[CLASS] Created class '%s'\n", $2);
           }
@@ -964,15 +965,24 @@ class_member_or_access_spec
     : class_member
     | access_specifier ':'
         {
-            // TODO: Access specifiers not yet implemented - ignore for now
-            if (debug) printf("[CLASS] Access specifier (ignored)\n");
+            // Access specifier sets current access level for subsequent members
+            if (debug) printf("[CLASS] Set access specifier\n");
         }
     ;
 
 access_specifier
     : PUBLIC
+        {
+            current_access_level = ACCESS_PUBLIC;
+        }
     | PRIVATE
+        {
+            current_access_level = ACCESS_PRIVATE;
+        }
     | PROTECTED
+        {
+            current_access_level = ACCESS_PROTECTED;
+        }
     ;
 
 class_member
@@ -1010,7 +1020,7 @@ class_member
               // Register constructor
               std::vector<Type> empty_params;
               MethodSignature* method = register_method(current_class->name, pending_method_name,
-                                                        empty_params, pending_method_return_type, true);
+                                                        empty_params, pending_method_return_type, true, false, current_access_level);
               if (method) {
                   current_class->add_method(method);
                   current_method_signature = method;
@@ -1077,7 +1087,7 @@ class_member
                                current_class->name.c_str(), pending_method_name.c_str(),
                                (int)pending_method_param_types.size());
               MethodSignature* method = register_method(current_class->name, pending_method_name,
-                                                        pending_method_param_types, pending_method_return_type, true);
+                                                        pending_method_param_types, pending_method_return_type, true, false, current_access_level);
               if (method) {
                   current_class->add_method(method);
                   current_method_signature = method;
@@ -1140,7 +1150,7 @@ class_member
               // Register destructor
               std::vector<Type> empty_params;
               MethodSignature* method = register_method(current_class->name, pending_method_name,
-                                                        empty_params, pending_method_return_type, false, true);
+                                                        empty_params, pending_method_return_type, false, true, current_access_level);
               if (method) {
                   current_class->add_method(method);
                   current_method_signature = method;
@@ -1217,7 +1227,7 @@ class_member
               // Register method BEFORE compound_statement so we can emit label
               std::vector<Type> empty_params;
               MethodSignature* method = register_method(current_class->name, pending_method_name,
-                                                        empty_params, pending_method_return_type, is_constructor);
+                                                        empty_params, pending_method_return_type, is_constructor, false, current_access_level);
               if (method) {
                   current_class->add_method(method);
                   
@@ -1316,7 +1326,7 @@ class_member
                                pending_method_return_type.to_string().c_str(),
                                (int)pending_method_param_types.size());
               MethodSignature* method = register_method(current_class->name, pending_method_name,
-                                                        pending_method_param_types, pending_method_return_type, is_constructor);
+                                                        pending_method_param_types, pending_method_return_type, is_constructor, false, current_access_level);
               if (method) {
                   current_class->add_method(method);
                   
@@ -1405,7 +1415,7 @@ class_member
               }
 
               MethodSignature* method = register_method(current_class->name, pending_method_name,
-                                                        empty_params, pending_method_return_type, is_constructor);
+                                                        empty_params, pending_method_return_type, is_constructor, false, current_access_level);
               if (method) {
                   current_class->add_method(method);
                   
@@ -1499,7 +1509,7 @@ class_member
                                current_class->name.c_str(), pending_method_name.c_str(),
                                (int)pending_method_param_types.size());
               MethodSignature* method = register_method(current_class->name, pending_method_name,
-                                                        pending_method_param_types, pending_method_return_type, is_constructor);
+                                                        pending_method_param_types, pending_method_return_type, is_constructor, false, current_access_level);
               if (method) {
                   current_class->add_method(method);
                   
@@ -1573,7 +1583,7 @@ class_declarator
               member_type->array_dim = current_array_sizes.size();
               member_type->array_sizes = current_array_sizes;
               
-              current_class->add_member($1, member_type, @1.first_line);
+              current_class->add_member($1, member_type, @1.first_line, current_access_level);
               if (debug) printf("[CLASS] Added member '%s' of type '%s' to class '%s'\n", 
                                $1, member_type->to_string().c_str(), current_class->name.c_str());
               
@@ -1593,7 +1603,7 @@ class_declarator
           if ($1) {
               Type* member_type = new Type(current_type);
               member_type->pointer_level = current_pointer_level;
-              current_class->add_member($1, member_type, @1.first_line);
+              current_class->add_member($1, member_type, @1.first_line, current_access_level);
               if (debug) printf("[CLASS] Added bit-field member '%s' (simplified)\n", $1);
               current_pointer_level = 0;
               current_is_array = false;
