@@ -894,7 +894,7 @@ void DefaultLabel::generate_tac()
 // ============================================================================
 
 SwitchStatement::SwitchStatement(Expression *expr, Statement *body_stmt)
-    : switch_expr(expr), body(body_stmt), default_label(-1)
+    : switch_expr(expr), body(body_stmt), default_label(-1), use_jump_table(false)
 {
 }
 
@@ -934,13 +934,191 @@ void SwitchStatement::collect_labels(Statement *stmt)
     }
 }
 
+// ============================================================================
+// SwitchStatement Helper Functions - Jump Table Optimization
+// ============================================================================
+
+int SwitchStatement::extract_constant_value(Expression *expr)
+{
+    // Extract constant integer value from case expression
+    // This assumes the expression has already been type-checked
+
+    if (!expr->result)
+    {
+        // Expression hasn't been evaluated yet
+        expr->generate_tac();
+    }
+
+    if (expr->result && expr->result->type == TACOperand::OPERAND_CONSTANT)
+    {
+        try
+        {
+            return std::stoi(expr->result->name);
+        }
+        catch (...)
+        {
+            fprintf(stderr, "[Error] Line %d: Case value must be a constant integer\n", line_no);
+            semantic_error_count++;
+            return 0;
+        }
+    }
+
+    fprintf(stderr, "[Error] Line %d: Case value must be a constant expression\n", line_no);
+    semantic_error_count++;
+    return 0;
+}
+
+bool SwitchStatement::should_use_jump_table(const std::vector<int> &case_values)
+{
+    // Decide whether to use jump table optimization based on:
+    // 1. Number of cases (need at least 4-5 cases)
+    // 2. Density of case values (at least 40% filled)
+    // 3. Range size (not too large to avoid memory waste)
+
+    if (case_values.empty())
+        return false;
+
+    size_t num_cases = case_values.size();
+
+    // Need at least 4 cases to justify jump table overhead
+    if (num_cases < 4)
+        return false;
+
+    // Find min and max case values
+    int min_val = *std::min_element(case_values.begin(), case_values.end());
+    int max_val = *std::max_element(case_values.begin(), case_values.end());
+    int range = max_val - min_val + 1;
+
+    // Check if range is reasonable (not too large)
+    if (range > 256)
+    {
+        if (debug)
+            printf("[Optimization] Switch: Range too large (%d), using sequential dispatch\n", range);
+        return false;
+    }
+
+    // Check density: at least 40% of the range should be filled with cases
+    float density = (float)num_cases / (float)range;
+    if (density < 0.4f)
+    {
+        if (debug)
+            printf("[Optimization] Switch: Density too low (%.2f), using sequential dispatch\n", density);
+        return false;
+    }
+
+    // Good candidate for jump table!
+    if (debug)
+        printf("[Optimization] Switch: Using jump table (cases=%zu, range=%d, density=%.2f)\n",
+               num_cases, range, density);
+
+    return true;
+}
+
+void SwitchStatement::generate_jump_table_dispatch(TACOperand switch_result,
+                                                   const std::vector<int> &case_values)
+{
+    // Generate jump table dispatch code:
+    // 1. Bounds check (if x < min or x > max, goto default)
+    // 2. Normalize index (index = x - min)
+    // 3. Emit jump table instruction
+
+    int min_val = *std::min_element(case_values.begin(), case_values.end());
+    int max_val = *std::max_element(case_values.begin(), case_values.end());
+    int range = max_val - min_val + 1;
+
+    // Initialize jump table structure
+    jump_table_info.min_value = min_val;
+    jump_table_info.max_value = max_val;
+    jump_table_info.table.resize(range, -1); // -1 means no case at this position
+    jump_table_info.default_label = -1;
+    jump_table_info.case_positions.clear();
+
+    // Map case values to their indices
+    for (size_t i = 0; i < case_values.size(); i++)
+    {
+        int index = case_values[i] - min_val;
+        jump_table_info.table[index] = i; // Maps to case index
+    }
+
+    // STEP 1: Bounds check - if (x < min_val) goto default
+    TACOperand min_op(TACOperand::OPERAND_CONSTANT, std::to_string(min_val));
+    TACOperand bounds_temp1 = tacGen.newTemp();
+    tacGen.emit(TAC_LT, bounds_temp1, switch_result, min_op);
+    int bounds_check1 = tacGen.emit(TAC_IF_GOTO, TACOperand(), bounds_temp1);
+    code.push_back(tacGen.getCode().back());
+    dispatch_instructions.push_back(bounds_check1);
+
+    // STEP 2: Bounds check - if (x > max_val) goto default
+    TACOperand max_op(TACOperand::OPERAND_CONSTANT, std::to_string(max_val));
+    TACOperand bounds_temp2 = tacGen.newTemp();
+    tacGen.emit(TAC_GT, bounds_temp2, switch_result, max_op);
+    int bounds_check2 = tacGen.emit(TAC_IF_GOTO, TACOperand(), bounds_temp2);
+    code.push_back(tacGen.getCode().back());
+    dispatch_instructions.push_back(bounds_check2);
+
+    // STEP 3: Normalize to 0-based index: index = x - min_val
+    TACOperand index_temp = tacGen.newTemp();
+    tacGen.emit(TAC_SUB, index_temp, switch_result, min_op);
+    code.push_back(tacGen.getCode().back());
+
+    // STEP 4: Jump table instruction - goto jump_table[index]
+    // We'll emit this as a special instruction and backpatch with actual labels
+    // Note: For jump table, we use arg1 to hold the index (result is empty)
+    int table_jump = tacGen.emit(TAC_JUMP_TABLE, TACOperand(), index_temp);
+    code.push_back(tacGen.getCode().back());
+    dispatch_instructions.push_back(table_jump);
+
+    if (debug)
+        printf("[AST] SwitchStatement: Generated jump table dispatch (range %d-%d)\n",
+               min_val, max_val);
+}
+
+void SwitchStatement::generate_sequential_dispatch(TACOperand switch_result,
+                                                   const std::vector<int> &case_values)
+{
+    // Generate sequential comparison dispatch (original implementation)
+    // For each case: compare and conditionally jump
+
+    dispatch_instructions.clear();
+
+    for (size_t i = 0; i < case_values.size(); i++)
+    {
+        Expression *case_expr = case_labels[i].first;
+
+        // Evaluate case expression (should be constant)
+        case_expr->generate_tac();
+        code.insert(code.end(), case_expr->code.begin(), case_expr->code.end());
+
+        // Generate comparison: _t = switch_result == case_value
+        TACOperand temp = tacGen.newTemp();
+        tacGen.emit(TAC_EQ, temp, switch_result, *case_expr->result);
+        code.push_back(tacGen.getCode().back());
+
+        // Generate conditional jump: if _t goto case_label
+        int jump_instr = tacGen.emit(TAC_IF_GOTO, TACOperand(), temp);
+        code.push_back(tacGen.getCode().back());
+
+        // Remember this instruction for backpatching
+        dispatch_instructions.push_back(jump_instr);
+    }
+
+    // If no cases match, goto default (or EXIT if no default)
+    int default_goto_instr = tacGen.emit(TAC_GOTO, TACOperand(), TACOperand());
+    code.push_back(tacGen.getCode().back());
+    dispatch_instructions.push_back(default_goto_instr);
+
+    if (debug)
+        printf("[AST] SwitchStatement: Generated sequential dispatch (%zu cases)\n",
+               case_values.size());
+}
+
 void SwitchStatement::generate_tac()
 {
     // ========================================================================
-    // Switch Statement TAC Generation
+    // Switch Statement TAC Generation with Jump Table Optimization
     // ========================================================================
     //
-    // Pattern:
+    // Sequential Pattern (for sparse/few cases):
     //   <switch_expr.code>              // Evaluate switch expression once
     //   _t0 = switch_expr == case1_value    // Compare with each case
     //   if _t0 goto L_case1
@@ -954,6 +1132,16 @@ void SwitchStatement::generate_tac()
     //     goto EXIT                     // break statement
     //   L_default:
     //     <default_body>
+    //   EXIT:
+    //
+    // Jump Table Pattern (for dense/many cases):
+    //   <switch_expr.code>
+    //   if x < min goto L_default       // Bounds check
+    //   if x > max goto L_default
+    //   index = x - min                 // Normalize
+    //   goto jump_table[index]          // O(1) dispatch
+    //   L_case1: ...
+    //   L_case2: ...
     //   EXIT:
     // ========================================================================
 
@@ -985,36 +1173,32 @@ void SwitchStatement::generate_tac()
     // Store switch result for comparison
     TACOperand switch_result = *switch_expr->result;
 
-    // STEP 4: Generate dispatch code (comparisons and conditional jumps)
-    // These will be backpatched with actual case positions once we know them
-    std::vector<int> case_jump_instructions;
-
-    for (size_t i = 0; i < case_labels.size(); i++)
+    // STEP 4: Extract constant values from all cases and decide optimization strategy
+    std::vector<int> case_values;
+    for (const auto &case_pair : case_labels)
     {
-        Expression *case_expr = case_labels[i].first;
-
-        // Evaluate case expression (should be constant)
-        case_expr->generate_tac();
-        code.insert(code.end(), case_expr->code.begin(), case_expr->code.end());
-
-        // Generate comparison: _t = switch_result == case_value
-        TACOperand temp = tacGen.newTemp();
-        tacGen.emit(TAC_EQ, temp, switch_result, *case_expr->result);
-        code.push_back(tacGen.getCode().back());
-
-        // Generate conditional jump: if _t goto case_label
-        int jump_instr = tacGen.emit(TAC_IF_GOTO, TACOperand(), temp);
-        code.push_back(tacGen.getCode().back());
-
-        // Remember this instruction for backpatching
-        case_jump_instructions.push_back(jump_instr);
+        int value = extract_constant_value(case_pair.first);
+        case_values.push_back(value);
     }
 
-    // If no cases match, goto default (or EXIT if no default)
-    int default_goto_instr = tacGen.emit(TAC_GOTO, TACOperand(), TACOperand());
-    code.push_back(tacGen.getCode().back());
+    // Decide whether to use jump table or sequential dispatch
+    use_jump_table = should_use_jump_table(case_values);
 
-    // STEP 5: Now generate the body code
+    // STEP 5: Generate dispatch code based on optimization decision
+    dispatch_instructions.clear();
+
+    if (use_jump_table)
+    {
+        // Use jump table for O(1) dispatch
+        generate_jump_table_dispatch(switch_result, case_values);
+    }
+    else
+    {
+        // Use sequential comparison for sparse/few cases
+        generate_sequential_dispatch(switch_result, case_values);
+    }
+
+    // STEP 6: Now generate the body code
     // Track where each case label starts
     std::vector<int> case_positions;
     int default_position = -1;
@@ -1076,23 +1260,78 @@ void SwitchStatement::generate_tac()
     // Decrement loop_depth now that we're done with the switch body
     loop_depth--;
 
-    // STEP 6: Backpatch case jumps to their actual positions
-    for (size_t i = 0; i < case_jump_instructions.size() && i < case_positions.size(); i++)
-    {
-        tacGen.getCode()[case_jump_instructions[i]]->target_line = case_positions[i];
-    }
-
-    // STEP 7: Backpatch the default goto
+    // STEP 7: Backpatch dispatch instructions based on optimization strategy
     int exit_label = tacGen.nextinstr();
 
-    if (default_position != -1)
+    if (use_jump_table)
     {
-        tacGen.getCode()[default_goto_instr]->target_line = default_position;
+        // Jump table backpatching
+        // dispatch_instructions[0] = bounds check 1 (goto default if x < min)
+        // dispatch_instructions[1] = bounds check 2 (goto default if x > max)
+        // dispatch_instructions[2] = jump table instruction
+
+        // Backpatch bounds checks to default or exit
+        int default_target = (default_position != -1) ? default_position : exit_label;
+
+        if (dispatch_instructions.size() >= 3)
+        {
+            tacGen.getCode()[dispatch_instructions[0]]->target_line = default_target;
+            tacGen.getCode()[dispatch_instructions[1]]->target_line = default_target;
+
+            // For the jump table instruction, store the case positions
+            // The jump table maps normalized indices to case positions
+
+            // Store jump table metadata in the instruction's comment or as special data
+            // For now, we'll generate a comment showing the table mapping
+            std::string table_comment = "Jump table: ";
+            for (size_t i = 0; i < jump_table_info.table.size(); i++)
+            {
+                int case_idx = jump_table_info.table[i];
+                if (case_idx >= 0 && (size_t)case_idx < case_positions.size())
+                {
+                    table_comment += "[" + std::to_string(i) + "]=>" +
+                                     std::to_string(case_positions[case_idx]) + " ";
+                }
+                else
+                {
+                    table_comment += "[" + std::to_string(i) + "]=>" +
+                                     std::to_string(default_target) + " ";
+                }
+            }
+
+            // Store the actual case positions in the jump table
+            jump_table_info.case_positions = case_positions;
+            jump_table_info.default_label = default_target;
+
+            if (debug)
+                printf("[AST] SwitchStatement: Backpatched jump table - %s\n",
+                       table_comment.c_str());
+        }
     }
     else
     {
-        // No default - goto EXIT
-        tacGen.getCode()[default_goto_instr]->target_line = exit_label;
+        // Sequential dispatch backpatching
+        // dispatch_instructions[0..n-1] = case comparisons
+        // dispatch_instructions[n] = default goto
+
+        // Backpatch case jumps to their actual positions
+        size_t num_case_jumps = dispatch_instructions.size() - 1; // Last one is default goto
+        for (size_t i = 0; i < num_case_jumps && i < case_positions.size(); i++)
+        {
+            tacGen.getCode()[dispatch_instructions[i]]->target_line = case_positions[i];
+        }
+
+        // Backpatch the default goto
+        int default_goto_idx = dispatch_instructions.back();
+        if (default_position != -1)
+        {
+            tacGen.getCode()[default_goto_idx]->target_line = default_position;
+        }
+        else
+        {
+            // No default - goto EXIT
+            tacGen.getCode()[default_goto_idx]->target_line = exit_label;
+        }
     }
 
     // STEP 8: Backpatch all break statements to EXIT
@@ -1346,7 +1585,7 @@ void GotoStatement::generate_tac()
     // Emit a goto instruction to the target label
     int goto_instr = tacGen.emit(TAC_GOTO, TACOperand(TACOperand::OPERAND_LABEL, label_name), TACOperand());
     code.push_back(tacGen.getCode().back());
-    
+
     // Register this goto for backpatching when the label is found
     tacGen.emit_goto(label_name, goto_instr);
 
@@ -1354,9 +1593,8 @@ void GotoStatement::generate_tac()
         printf("[AST] GotoStatement: Generated goto to label '%s'\n", label_name.c_str());
 }
 
-
 // ============================================================================
-// LabelStatement Implementation  
+// LabelStatement Implementation
 // ============================================================================
 
 // Fixed LabelStatement constructor
@@ -1366,7 +1604,6 @@ LabelStatement::LabelStatement(const std::string &label, Statement *stmt)
     // Do NOT emit TAC or register the label here.
     // Label will be emitted and registered in generate_tac().
 }
-
 
 LabelStatement::~LabelStatement()
 {
@@ -1386,7 +1623,7 @@ void LabelStatement::generate_tac()
     // Emit a label instruction at the current position
     int label_instr = tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL, label_name), TACOperand());
     code.push_back(tacGen.getCode().back());
-    
+
     // Register the label -> gotos should jump to the NEXT instruction after the label
     // So we register the next instruction position (label_instr + 1)
     tacGen.emit_label(label_name, label_instr);
@@ -1421,4 +1658,3 @@ LabelStatement *create_label_statement(const std::string &label, Statement *stmt
 {
     return new LabelStatement(label, stmt);
 }
-

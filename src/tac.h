@@ -87,6 +87,10 @@ enum TACOp
     TAC_IF_GOTO,       // if x goto L1
     TAC_IF_FALSE_GOTO, // ifFalse x goto L1
 
+    // Jump Table Optimization (for switch statements)
+    TAC_JUMP_TABLE,   // goto jump_table[index] (indexed jump)
+    TAC_BOUNDS_CHECK, // bounds check for jump table
+
     // Function calls and return
     TAC_RETURN, // return
     TAC_PARAM,  // param x

@@ -291,17 +291,17 @@ public:
 
 /**
  * Return Statement - Return from function
- * 
+ *
  * Syntax: return expression; or return;
  * Semantics: Type of expression must match function return type
- * 
+ *
  * generate_tac():
  * - If expression present, generate its code
- * - Emit TAC_RETURN instruction with expression result (or empty for void) 
+ * - Emit TAC_RETURN instruction with expression result (or empty for void)
  */
 class ReturnStatement : public Statement
 {
-    public:
+public:
     Expression *expr;
 
     ReturnStatement(Expression *e = nullptr);
@@ -309,7 +309,6 @@ class ReturnStatement : public Statement
 
     std::string to_string() const override;
     void generate_tac() override;
-
 };
 
 /**
@@ -476,11 +475,26 @@ public:
 };
 
 /**
+ * Jump Table Structure - For efficient switch dispatch
+ *
+ * Used when case values are dense and numerous enough to warrant
+ * O(1) jump table optimization instead of O(n) sequential comparison.
+ */
+struct JumpTable
+{
+    int min_value;                   // Minimum case value in the switch
+    int max_value;                   // Maximum case value in the switch
+    std::vector<int> table;          // table[i] = label for case (min + i), or -1 for no case
+    int default_label;               // Label for default case (or exit if no default)
+    std::vector<int> case_positions; // Actual instruction positions for each case
+};
+
+/**
  * Switch Statement - Multi-way conditional branch
  *
  * Syntax: switch (expression) { case val1: ... case val2: ... default: ... }
  *
- * TAC Pattern:
+ * TAC Pattern (Sequential - for sparse/few cases):
  *   <switch_expr.code>              // Evaluate switch expression once
  *   _result = switch_expr
  *   _t0 = _result == case1_value    // Compare with each case
@@ -497,10 +511,24 @@ public:
  *     <default_body>
  *   EXIT:
  *
+ * TAC Pattern (Jump Table - for dense/many cases):
+ *   <switch_expr.code>              // Evaluate switch expression once
+ *   if x < min_val goto L_default   // Bounds check
+ *   if x > max_val goto L_default
+ *   index = x - min_val             // Normalize to 0-based index
+ *   goto jump_table[index]          // Direct O(1) jump
+ *   L_case1:
+ *     <case1_body>
+ *   L_case2:
+ *     <case2_body>
+ *   ...
+ *   EXIT:
+ *
  * generate_tac():
  * - Evaluates switch expression once
  * - Scans body to collect all CaseLabel and DefaultLabel positions
- * - Generates comparison dispatch code at the beginning
+ * - Decides optimization strategy: jump table vs sequential
+ * - Generates appropriate dispatch code
  * - Generates body code with fall-through behavior
  * - Backpatches all break statements to EXIT
  *
@@ -509,6 +537,7 @@ public:
  * - Type checking: switch expr and case values must be integer types
  * - Constant checking: case values must be compile-time constants
  * - Default is optional
+ * - Jump table optimization for dense/many cases (O(1) dispatch)
  */
 class SwitchStatement : public Statement
 {
@@ -520,6 +549,11 @@ public:
     std::vector<std::pair<Expression *, int>> case_labels; // {case_value, label_position}
     int default_label;                                     // Position of default label (-1 if no default)
 
+    // Jump table optimization support:
+    bool use_jump_table;                    // Whether to use jump table optimization
+    JumpTable jump_table_info;              // Jump table data structure
+    std::vector<int> dispatch_instructions; // Instructions to backpatch for dispatch
+
     SwitchStatement(Expression *expr, Statement *body_stmt);
     virtual ~SwitchStatement();
 
@@ -528,6 +562,12 @@ public:
 
     // Helper to collect case/default labels from body
     void collect_labels(Statement *stmt);
+
+    // Optimization decision and dispatch generation:
+    bool should_use_jump_table(const std::vector<int> &case_values);
+    int extract_constant_value(Expression *expr);
+    void generate_jump_table_dispatch(TACOperand switch_result, const std::vector<int> &case_values);
+    void generate_sequential_dispatch(TACOperand switch_result, const std::vector<int> &case_values);
 };
 
 // ============================================================================

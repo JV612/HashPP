@@ -202,6 +202,17 @@ string TACInstruction::to_string() const
         else
             ss << "ifFalse " << arg1.to_string() << " goto [BACKPATCH]";
         break;
+
+    case TAC_JUMP_TABLE:
+        // Jump table indexed jump: goto jump_table[index]
+        ss << "goto jump_table[" << arg1.to_string() << "]";
+        break;
+
+    case TAC_BOUNDS_CHECK:
+        // Bounds check instruction (not used in current implementation)
+        ss << "bounds_check " << arg1.to_string();
+        break;
+
     case TAC_RETURN:
         if (!arg1.is_empty())
             ss << "return " << arg1.to_string();
