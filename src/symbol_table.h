@@ -373,4 +373,17 @@ Symbol *lookup_function_static_symbol(const std::string &varName, int scopeLevel
 // Register built-in I/O functions
 void register_builtin_io_functions();
 
+// ============================================================================
+// Unified Type Compatibility Checking
+// ============================================================================
+
+// Check if source_type can be converted to target_type
+bool is_type_compatible(const Type &target_type, const Type &source_type, bool allow_implicit_conversions = true);
+
+// Check if conversion should generate a warning
+bool should_warn_implicit_conversion(const Type &target_type, const Type &source_type);
+
+// Check if a type can be used in boolean context (if, while, for, logical operators)
+bool is_bool_compatible(const Type& type);
+
 #endif // SYMBOL_TABLE_H

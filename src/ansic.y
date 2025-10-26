@@ -523,6 +523,71 @@ assignment_expression
             Expression* rhs = create_binary_expression($1, TAC_MOD, $3);
             $$ = create_general_assignment_expression($1, rhs);
         }
+    | IDENTIFIER XOR_ASSIGN assignment_expression
+        {
+            // a ^= b becomes a = a ^ b
+            Expression* lhs = create_primary_expression($1);
+            Expression* rhs = create_binary_expression(lhs, TAC_BITWISE_XOR, $3);
+            $$ = create_assignment_expression($1, rhs);
+            free($1);
+        }
+    | unary_expression XOR_ASSIGN assignment_expression
+        {
+            Expression* rhs = create_binary_expression($1, TAC_BITWISE_XOR, $3);
+            $$ = create_general_assignment_expression($1, rhs);
+        }
+    | IDENTIFIER OR_ASSIGN assignment_expression
+        {
+            // a |= b becomes a = a | b
+            Expression* lhs = create_primary_expression($1);
+            Expression* rhs = create_binary_expression(lhs, TAC_BITWISE_OR, $3);
+            $$ = create_assignment_expression($1, rhs);
+            free($1);
+        }
+    | unary_expression OR_ASSIGN assignment_expression
+        {
+            Expression* rhs = create_binary_expression($1, TAC_BITWISE_OR, $3);
+            $$ = create_general_assignment_expression($1, rhs);
+        }
+    | IDENTIFIER AND_ASSIGN assignment_expression
+        {
+            // a &= b becomes a = a & b
+            Expression* lhs = create_primary_expression($1);
+            Expression* rhs = create_binary_expression(lhs, TAC_BITWISE_AND, $3);
+            $$ = create_assignment_expression($1, rhs);
+            free($1);
+        }
+    | unary_expression AND_ASSIGN assignment_expression
+        {
+            Expression* rhs = create_binary_expression($1, TAC_BITWISE_AND, $3);
+            $$ = create_general_assignment_expression($1, rhs);
+        }
+    | IDENTIFIER LEFT_ASSIGN assignment_expression
+        {
+            // a <<= b becomes a = a << b
+            Expression* lhs = create_primary_expression($1);
+            Expression* rhs = create_binary_expression(lhs, TAC_LEFT_SHIFT, $3);
+            $$ = create_assignment_expression($1, rhs);
+            free($1);
+        }
+    | unary_expression LEFT_ASSIGN assignment_expression
+        {
+            Expression* rhs = create_binary_expression($1, TAC_LEFT_SHIFT, $3);
+            $$ = create_general_assignment_expression($1, rhs);
+        }
+    | IDENTIFIER RIGHT_ASSIGN assignment_expression
+        {
+            // a >>= b becomes a = a >> b
+            Expression* lhs = create_primary_expression($1);
+            Expression* rhs = create_binary_expression(lhs, TAC_RIGHT_SHIFT, $3);
+            $$ = create_assignment_expression($1, rhs);
+            free($1);
+        }
+    | unary_expression RIGHT_ASSIGN assignment_expression
+        {
+            Expression* rhs = create_binary_expression($1, TAC_RIGHT_SHIFT, $3);
+            $$ = create_general_assignment_expression($1, rhs);
+        }
     ;
 
 assignment_operator

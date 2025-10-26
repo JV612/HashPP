@@ -20,6 +20,31 @@ int effective_line(int line)
 #define SEM_ERROR(line, ...) report_semantic_error(effective_line(line), __VA_ARGS__)
 #define SEM_WARN(line, ...) report_semantic_warning(effective_line(line), __VA_ARGS__)
 
+// Helper function to get operator name for error messages
+const char* get_operator_name(TACOp op) {
+    switch (op) {
+        case TAC_ADD: return "+";
+        case TAC_SUB: return "-";
+        case TAC_MUL: return "*";
+        case TAC_DIV: return "/";
+        case TAC_MOD: return "%";
+        case TAC_BITWISE_AND: return "&";
+        case TAC_BITWISE_OR: return "|";
+        case TAC_BITWISE_XOR: return "^";
+        case TAC_LEFT_SHIFT: return "<<";
+        case TAC_RIGHT_SHIFT: return ">>";
+        case TAC_LT: return "<";
+        case TAC_GT: return ">";
+        case TAC_LE: return "<=";
+        case TAC_GE: return ">=";
+        case TAC_EQ: return "==";
+        case TAC_NE: return "!=";
+        case TAC_LOGICAL_AND: return "&&";
+        case TAC_LOGICAL_OR: return "||";
+        default: return "unknown";
+    }
+}
+
 // ============================================================================
 // Expression Implementation
 // ============================================================================
@@ -504,39 +529,104 @@ void BinaryExpression::generate_tac()
     }
 
     // ========================================================================
-    // POINTER ARITHMETIC HANDLING
-    // Arrays decay to pointers in arithmetic contexts
+    // ARRAY AND POINTER HANDLING
+    // Arrays decay to pointers ONLY in valid contexts (arithmetic, comparison, assignment)
     // ========================================================================
-    bool left_is_pointer = left->type->is_pointer() || left->type->is_array;
-    bool right_is_pointer = right->type->is_pointer() || right->type->is_array;
+    bool left_is_pointer = left->type->is_pointer();
+    bool right_is_pointer = right->type->is_pointer();
+    bool left_is_array = left->type->is_array;
+    bool right_is_array = right->type->is_array;
     bool left_is_integer = left->type->is_integer();
     bool right_is_integer = right->type->is_integer();
+    
+    // Check for invalid array operations BEFORE allowing decay
+    if (left_is_array || right_is_array)
+    {
+        // Arrays can ONLY be used in: +, -, ==, !=, <, >, <=, >=
+        // All other operations (*, /, %, &, |, ^, <<, >>) are INVALID
+        if (op != TAC_ADD && op != TAC_SUB && 
+            op != TAC_LT && op != TAC_GT && op != TAC_LE && op != TAC_GE && 
+            op != TAC_EQ && op != TAC_NE)
+        {
+            SEM_ERROR(line_no,
+                      "Invalid operation '%s' on array type. Arrays can only be used with +, -, or comparison operators",
+                      get_operator_name(op));
+            semantic_error_count++;
+            type = new Type(TYPE_ERROR);
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");
+            return;
+        }
+        
+        // Additional validation: array * array, array / array, etc. are invalid
+        if ((op == TAC_MUL || op == TAC_DIV || op == TAC_MOD) && (left_is_array && right_is_array))
+        {
+            SEM_ERROR(line_no,
+                      "Invalid operation '%s' between two arrays",
+                      get_operator_name(op));
+            semantic_error_count++;  
+            type = new Type(TYPE_ERROR);
+            result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");
+            return;
+        }
+    }
+    
+    // NOW we can allow array-to-pointer decay for valid operations
+    bool left_is_pointer_like = left_is_pointer || left_is_array;
+    bool right_is_pointer_like = right_is_pointer || right_is_array;
 
     // Handle pointer + integer (or array + integer)
-    if (op == TAC_ADD && left_is_pointer && right_is_integer)
+    if (op == TAC_ADD && left_is_pointer_like && right_is_integer)
     {
         handle_pointer_plus_integer(left, right);
         return;
     }
 
     // Handle integer + pointer (or integer + array)
-    if (op == TAC_ADD && left_is_integer && right_is_pointer)
+    if (op == TAC_ADD && left_is_integer && right_is_pointer_like)
     {
         handle_pointer_plus_integer(right, left);
         return;
     }
 
     // Handle pointer - integer (or array - integer)
-    if (op == TAC_SUB && left_is_pointer && right_is_integer)
+    if (op == TAC_SUB && left_is_pointer_like && right_is_integer)
     {
         handle_pointer_minus_integer(left, right);
         return;
     }
 
     // Handle pointer - pointer (or array - pointer, or array - array)
-    if (op == TAC_SUB && left_is_pointer && right_is_pointer)
+    if (op == TAC_SUB && left_is_pointer_like && right_is_pointer_like)
     {
         handle_pointer_minus_pointer(left, right);
+        return;
+    }
+
+    // ========================================================================
+    // REJECT INVALID POINTER/ARRAY COMBINATIONS
+    // ========================================================================
+    
+    // Addition: reject pointer + pointer, array + pointer, array + array (not handled above)
+    if (op == TAC_ADD && left_is_pointer_like && right_is_pointer_like)
+    {
+        SEM_ERROR(line_no,
+                  "Invalid addition: cannot add two pointers/arrays. Use pointer/array + integer instead. Got %s + %s",
+                  left->type->to_string().c_str(), right->type->to_string().c_str());
+        semantic_error_count++;
+        type = new Type(TYPE_ERROR);
+        result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");
+        return;
+    }
+    
+    // Subtraction: reject int - pointer/array (reverse subtraction not allowed)
+    if (op == TAC_SUB && left_is_integer && right_is_pointer_like)
+    {
+        SEM_ERROR(line_no,
+                  "Invalid subtraction: cannot subtract pointer/array from integer. Got %s - %s",
+                  left->type->to_string().c_str(), right->type->to_string().c_str());
+        semantic_error_count++;
+        type = new Type(TYPE_ERROR);
+        result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");
         return;
     }
 
@@ -636,13 +726,13 @@ void BinaryExpression::generate_tac()
             return;
         }
     }
-    // Ordering operators (<, >, <=, >=) require numeric operands only
+    // Ordering operators (<, >, <=, >=) require ONLY numeric operands (no pointers/arrays)
     else if (op == TAC_LT || op == TAC_GT || op == TAC_LE || op == TAC_GE)
     {
         if (!left->type->is_numeric() || !right->type->is_numeric())
         {
             SEM_ERROR(line_no,
-                      "Ordering operator '%s' requires numeric operands, got %s and %s",
+                      "Ordering operator '%s' requires numeric operands only, got %s and %s",
                       op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
@@ -650,7 +740,7 @@ void BinaryExpression::generate_tac()
             return;
         }
     }
-    // Equality operators (==, !=) allow both numeric and pointer comparisons
+    // Equality operators (==, !=) allow numeric, pointer, and array comparisons
     else if (op == TAC_EQ || op == TAC_NE)
     {
         bool valid = false;
@@ -660,14 +750,21 @@ void BinaryExpression::generate_tac()
         {
             valid = true;
         }
-        // Case 2: Both operands are pointers of compatible types
-        else if (left->type->is_pointer() && right->type->is_pointer())
+        // Case 2: Both operands are pointers/arrays of compatible types
+        else if ((left->type->is_pointer() || left->type->is_array) && 
+                 (right->type->is_pointer() || right->type->is_array))
         {
-            // For now, allow any pointer-to-pointer comparison
-            // TODO: Add stricter type compatibility checking
-            valid = true;
+            // Pointer/array comparison rules:
+            // 1. Same pointer/array types can be compared (arrays decay to pointers)
+            // 2. void* can be compared with any pointer/array
+            // 3. Any pointer/array can be compared with null constant
+            if (is_type_compatible(*left->type, *right->type, true) ||
+                is_type_compatible(*right->type, *left->type, true))
+            {
+                valid = true;
+            }
         }
-        // Case 3: One is a null constant and the other is a pointer
+        // Case 3: One is a null constant and the other is a pointer/array
         // TODO: Implement null constant detection
 
         if (!valid)
@@ -681,14 +778,14 @@ void BinaryExpression::generate_tac()
             return;
         }
     }
-    // Logical operators accept numeric types, pointers, or bool (C semantics: any scalar type is "truthy")
+    // Logical operators accept bool-compatible types (int, char, double, pointers, enum, bool)
+    // but reject struct/class/union types
     else if (op == TAC_LOGICAL_AND || op == TAC_LOGICAL_OR)
     {
-        if (!(left->type->is_numeric() || left->type->is_pointer() || left->type->base_type == TYPE_BOOL) ||
-            !(right->type->is_numeric() || right->type->is_pointer() || right->type->base_type == TYPE_BOOL))
+        if (!is_bool_compatible(*left->type) || !is_bool_compatible(*right->type))
         {
             SEM_ERROR(line_no,
-                      "Logical operator '%s' requires numeric, pointer, or bool operands, got %s and %s",
+                      "Logical operator '%s' requires bool-compatible operands (numeric, pointer, enum, or bool), got %s and %s",
                       op_name, left->type->to_string().c_str(), right->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
@@ -1253,13 +1350,14 @@ void UnaryExpression::generate_tac()
             return;
         }
     }
-    // Logical NOT requires numeric, pointer, or bool operand (C semantics: any scalar type is "truthy")
+    // Logical NOT requires bool-compatible operands (int, char, double, pointers, enum, bool)
+    // but rejects struct/class/union types
     else if (op == TAC_LOGICAL_NOT)
     {
-        if (!expr->type->is_numeric() && !expr->type->is_pointer() && expr->type->base_type != TYPE_BOOL)
+        if (!is_bool_compatible(*expr->type))
         {
             SEM_ERROR(line_no,
-                      "Logical NOT '!' requires numeric, pointer, or bool operand, got %s",
+                      "Logical NOT '!' requires bool-compatible operand (numeric, pointer, enum, or bool), got %s",
                       expr->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
@@ -1532,68 +1630,19 @@ void AssignmentExpression::generate_tac()
     // For member assignment, use member_type; for normal assignment, use sym->type
     Type lhs_type = is_member_assignment ? member_type : sym->type;
 
-    // Check type compatibility with full pointer/array checking
-    bool compatible = false;
-
-    // First check: exact type match (including pointer levels and array status)
-    if (lhs_type.base_type == rhs->type->base_type &&
-        lhs_type.pointer_level == rhs->type->pointer_level &&
-        lhs_type.is_array == rhs->type->is_array)
+    // Use unified type compatibility checking
+    if (!is_type_compatible(lhs_type, *rhs->type, true))
     {
-        // For struct types, also check that struct names match
-        if (lhs_type.is_struct && rhs->type->is_struct)
-        {
-            if (lhs_type.struct_name == rhs->type->struct_name && lhs_type.is_union == rhs->type->is_union)
-            {
-                compatible = true;
-            }
-        }
-        else if (!lhs_type.is_struct && !rhs->type->is_struct)
-        {
-            // Non-struct types match
-            compatible = true;
-        }
-        // else: one is struct, one is not -> incompatible
-    }
-    // Second check: array-to-pointer decay
-    // A single-dimensional array T[N] can be assigned to a pointer to T
-    else if (rhs->type->is_array &&
-             lhs_type.pointer_level > 0 &&
-             !lhs_type.is_array &&
-             lhs_type.base_type == rhs->type->base_type &&
-             rhs->type->array_dim == 1 &&
-             lhs_type.pointer_level == (rhs->type->pointer_level + 1))
-    {
-        compatible = true;
-        // Single-dimensional array automatically decays to pointer to first element
-    }
-    // Null constant check: null can be assigned to any pointer type
-    else if (lhs_type.pointer_level > 0 &&
-             rhs->type->base_type == TYPE_VOID && rhs->type->pointer_level == 1)
-    {
-        // Allow null constants to be assigned to any pointer type
-        compatible = true;
-    }
-    // Third check: numeric type conversions (only for non-pointer types)
-    else if (lhs_type.pointer_level == 0 && rhs->type->pointer_level == 0 &&
-             !lhs_type.is_array && !rhs->type->is_array &&
-             lhs_type.is_numeric() && rhs->type->is_numeric())
-    {
-        // Allow implicit numeric conversions but warn
-    compatible = true;
-    SEM_WARN(line_no,
-         "Implicit conversion in assignment from %s to %s",
-         rhs->type->to_string().c_str(), lhs_type.to_string().c_str());
-    }
-
-    // If not compatible, it's an error
-    if (!compatible)
-    {
-    SEM_ERROR(line_no, "Cannot assign %s to %s",
-          rhs->type->to_string().c_str(), lhs_type.to_string().c_str());
+        SEM_ERROR(line_no, "Cannot assign %s to %s",
+                  rhs->type->to_string().c_str(), lhs_type.to_string().c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
+    }
+    else if (should_warn_implicit_conversion(lhs_type, *rhs->type))
+    {
+        SEM_WARN(line_no, "Implicit conversion in assignment from %s to %s",
+                 rhs->type->to_string().c_str(), lhs_type.to_string().c_str());
     }
 
     // Assignment type is the LHS type
@@ -1795,59 +1844,19 @@ void GeneralAssignmentExpression::generate_tac()
         // The LHS already computed the pointer address in its result
         // We need to use TAC_DEREF_STORE
 
-        // Type compatibility check
-        bool compatible = false;
-
-        // Check for exact type match
-        if (lhs->type->base_type == rhs->type->base_type &&
-            lhs->type->pointer_level == rhs->type->pointer_level &&
-            lhs->type->is_array == rhs->type->is_array)
-        {
-            // For struct types, also check struct names match
-            if (lhs->type->is_struct && rhs->type->is_struct)
-            {
-                if (lhs->type->struct_name == rhs->type->struct_name && lhs->type->is_union == rhs->type->is_union && lhs->type->is_class == rhs->type->is_class)
-                {
-                    compatible = true;
-                }
-            }
-            else if (!lhs->type->is_struct && !rhs->type->is_struct)
-            {
-                compatible = true;
-            }
-        }
-        // Array-to-pointer decay (single-dimensional only)
-        else if (rhs->type->is_array &&
-                 lhs->type->pointer_level == 1 &&
-                 !lhs->type->is_array &&
-                 lhs->type->base_type == rhs->type->base_type &&
-                 rhs->type->array_dim == 1)
-        {
-            compatible = true;
-        }
-        // Null constant to pointer
-        else if (lhs->type->pointer_level > 0 &&
-                 rhs->type->base_type == TYPE_VOID && rhs->type->pointer_level == 1)
-        {
-            compatible = true;
-        }
-        // Numeric conversions (only for non-pointer types)
-        else if (lhs->type->pointer_level == 0 && rhs->type->pointer_level == 0 &&
-                 !lhs->type->is_array && !rhs->type->is_array &&
-                 lhs->type->is_numeric() && rhs->type->is_numeric())
-        {
-            compatible = true;
-            SEM_WARN(line_no, "Implicit conversion in assignment from %s to %s",
-                     rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
-        }
-
-        if (!compatible)
+        // Use unified type compatibility checking
+        if (!is_type_compatible(*lhs->type, *rhs->type, true))
         {
             SEM_ERROR(line_no, "Cannot assign %s to %s",
                       rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
+        }
+        else if (should_warn_implicit_conversion(*lhs->type, *rhs->type))
+        {
+            SEM_WARN(line_no, "Implicit conversion in assignment from %s to %s",
+                     rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
         }
 
         // Generate: *ptr = rhs_value
@@ -1867,59 +1876,19 @@ void GeneralAssignmentExpression::generate_tac()
         // The ArrayAccessExpression already calculated the address
         // We need to extract the address (before the final dereference)
 
-        // Type compatibility check
-        bool compatible = false;
-
-        // Check for exact type match
-        if (lhs->type->base_type == rhs->type->base_type &&
-            lhs->type->pointer_level == rhs->type->pointer_level &&
-            lhs->type->is_array == rhs->type->is_array)
-        {
-            // For struct types, also check struct names match
-            if (lhs->type->is_struct && rhs->type->is_struct)
-            {
-                if (lhs->type->struct_name == rhs->type->struct_name && lhs->type->is_union == rhs->type->is_union && lhs->type->is_class == rhs->type->is_class)
-                {
-                    compatible = true;
-                }
-            }
-            else if (!lhs->type->is_struct && !rhs->type->is_struct)
-            {
-                compatible = true;
-            }
-        }
-        // Array-to-pointer decay (single-dimensional only)
-        else if (rhs->type->is_array &&
-                 lhs->type->pointer_level == 1 &&
-                 !lhs->type->is_array &&
-                 lhs->type->base_type == rhs->type->base_type &&
-                 rhs->type->array_dim == 1)
-        {
-            compatible = true;
-        }
-        // Null constant to pointer
-        else if (lhs->type->pointer_level > 0 &&
-                 rhs->type->base_type == TYPE_VOID && rhs->type->pointer_level == 1)
-        {
-            compatible = true;
-        }
-        // Numeric conversions (only for non-pointer types)
-        else if (lhs->type->pointer_level == 0 && rhs->type->pointer_level == 0 &&
-                 !lhs->type->is_array && !rhs->type->is_array &&
-                 lhs->type->is_numeric() && rhs->type->is_numeric())
-        {
-            compatible = true;
-            SEM_WARN(line_no, "Implicit conversion in assignment from %s to %s",
-                     rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
-        }
-
-        if (!compatible)
+        // Use unified type compatibility checking
+        if (!is_type_compatible(*lhs->type, *rhs->type, true))
         {
             SEM_ERROR(line_no, "Cannot assign %s to %s",
                       rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
+        }
+        else if (should_warn_implicit_conversion(*lhs->type, *rhs->type))
+        {
+            SEM_WARN(line_no, "Implicit conversion in assignment from %s to %s",
+                     rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
         }
 
         // The ArrayAccessExpression generated:
@@ -1955,59 +1924,19 @@ void GeneralAssignmentExpression::generate_tac()
         // t3 = *t2 (the loaded value)
         // We need t2 (the address) for storing
 
-        // Type compatibility check
-        bool compatible = false;
-
-        // Check for exact type match
-        if (lhs->type->base_type == rhs->type->base_type &&
-            lhs->type->pointer_level == rhs->type->pointer_level &&
-            lhs->type->is_array == rhs->type->is_array)
+        // Use unified type compatibility checking
+        if (!is_type_compatible(*lhs->type, *rhs->type, true))
         {
-            // For struct types, also check struct names match
-            if (lhs->type->is_struct && rhs->type->is_struct)
-            {
-                if (lhs->type->struct_name == rhs->type->struct_name && lhs->type->is_union == rhs->type->is_union && lhs->type->is_class == rhs->type->is_class)
-                {
-                    compatible = true;
-                }
-            }
-            else if (!lhs->type->is_struct && !rhs->type->is_struct)
-            {
-                compatible = true;
-            }
-        }
-        // Array-to-pointer decay (single-dimensional only)
-        else if (rhs->type->is_array &&
-                 lhs->type->pointer_level == 1 &&
-                 !lhs->type->is_array &&
-                 lhs->type->base_type == rhs->type->base_type &&
-                 rhs->type->array_dim == 1)
-        {
-            compatible = true;
-        }
-        // Null constant to pointer
-        else if (lhs->type->pointer_level > 0 &&
-                 rhs->type->base_type == TYPE_VOID && rhs->type->pointer_level == 1)
-        {
-            compatible = true;
-        }
-        // Numeric conversions (only for non-pointer types)
-                else if (lhs->type->pointer_level == 0 && rhs->type->pointer_level == 0 &&
-                                 !lhs->type->is_array && !rhs->type->is_array &&
-                                 lhs->type->is_numeric() && rhs->type->is_numeric())
-                {
-                        compatible = true;
-                        SEM_WARN(line_no, "Implicit conversion in assignment from %s to %s",
-                                         rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
-                }
-
-                if (!compatible)
-                {
-                        SEM_ERROR(line_no, "Cannot assign %s to %s",
-                                            rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
+            SEM_ERROR(line_no, "Cannot assign %s to %s",
+                      rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
+        }
+        else if (should_warn_implicit_conversion(*lhs->type, *rhs->type))
+        {
+            SEM_WARN(line_no, "Implicit conversion in assignment from %s to %s",
+                     rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
         }
 
         // Get the address from the second-to-last instruction
@@ -2045,59 +1974,19 @@ void GeneralAssignmentExpression::generate_tac()
         // Store to struct member via pointer: ptr->member = value
         // Similar to member access, we need the address before the final dereference
 
-        // Type compatibility check
-        bool compatible = false;
-
-        // Check for exact type match
-        if (lhs->type->base_type == rhs->type->base_type &&
-            lhs->type->pointer_level == rhs->type->pointer_level &&
-            lhs->type->is_array == rhs->type->is_array)
-        {
-            // For struct types, also check struct names match
-            if (lhs->type->is_struct && rhs->type->is_struct)
-            {
-                if (lhs->type->struct_name == rhs->type->struct_name && lhs->type->is_union == rhs->type->is_union && lhs->type->is_class == rhs->type->is_class)
-                {
-                    compatible = true;
-                }
-            }
-            else if (!lhs->type->is_struct && !rhs->type->is_struct)
-            {
-                compatible = true;
-            }
-        }
-        // Array-to-pointer decay (single-dimensional only)
-        else if (rhs->type->is_array &&
-                 lhs->type->pointer_level == 1 &&
-                 !lhs->type->is_array &&
-                 lhs->type->base_type == rhs->type->base_type &&
-                 rhs->type->array_dim == 1)
-        {
-            compatible = true;
-        }
-        // Null constant to pointer
-        else if (lhs->type->pointer_level > 0 &&
-                 rhs->type->base_type == TYPE_VOID && rhs->type->pointer_level == 1)
-        {
-            compatible = true;
-        }
-        // Numeric conversions (only for non-pointer types)
-        else if (lhs->type->pointer_level == 0 && rhs->type->pointer_level == 0 &&
-                 !lhs->type->is_array && !rhs->type->is_array &&
-                 lhs->type->is_numeric() && rhs->type->is_numeric())
-        {
-            compatible = true;
-            SEM_WARN(line_no, "Implicit conversion in assignment from %s to %s",
-                     rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
-        }
-
-        if (!compatible)
+        // Use unified type compatibility checking
+        if (!is_type_compatible(*lhs->type, *rhs->type, true))
         {
             SEM_ERROR(line_no, "Cannot assign %s to %s",
                       rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
             semantic_error_count++;
             type = new Type(TYPE_ERROR);
             return;
+        }
+        else if (should_warn_implicit_conversion(*lhs->type, *rhs->type))
+        {
+            SEM_WARN(line_no, "Implicit conversion in assignment from %s to %s",
+                     rhs->type->to_string().c_str(), lhs->type->to_string().c_str());
         }
 
         // Get the address from the second-to-last instruction

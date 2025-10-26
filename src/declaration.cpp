@@ -173,76 +173,22 @@ void VariableDeclaration::generate_tac()
             return;
         }
 
-        // Check type compatibility with full pointer/array checking
-        bool compatible = false;
-
-        // First check: exact type match (including pointer levels and array status)
-        if (decl_type->base_type == initializer->type->base_type &&
-            decl_type->pointer_level == initializer->type->pointer_level &&
-            decl_type->is_array == initializer->type->is_array)
+        // Use unified type compatibility checking
+        if (!is_type_compatible(*decl_type, *initializer->type, true))
         {
-            // For struct types, also check struct names match
-            if (decl_type->is_struct && initializer->type->is_struct)
-            {
-                if (decl_type->struct_name == initializer->type->struct_name && decl_type->is_union == initializer->type->is_union)
-                {
-                    compatible = true;
-                }
-            }
-            else if (!decl_type->is_struct && !initializer->type->is_struct)
-            {
-                compatible = true;
-            }
-            // else: one is struct, one is not -> incompatible
-        }
-        // Array decay check: array T[N] can initialize pointer to T
-        else if (decl_type->pointer_level > 0 && !decl_type->is_array &&
-                 initializer->type->is_array &&
-                 decl_type->base_type == initializer->type->base_type)
-        {
-            // Array decay: T[N] -> T* where T can itself be a pointer type
-            // Examples:
-            // - int[5] -> int* (decl_type->pointer_level=1, initializer->pointer_level=0)
-            // - int*[2] -> int** (decl_type->pointer_level=2, initializer->pointer_level=1)
-            
-            if (initializer->type->array_dim == 1 && 
-                decl_type->pointer_level == (initializer->type->pointer_level + 1))
-            {
-                // Valid single-dimensional array decay
-                compatible = true;
-            }
-            // Multidimensional arrays should not decay to simple pointers
-            // int[3][2] should not become int* (that would be incorrect)
-        }
-        // Null constant check: null can be assigned to any pointer type
-        else if (decl_type->pointer_level > 0 &&
-                 initializer->type->base_type == TYPE_VOID && initializer->type->pointer_level == 1)
-        {
-            // Allow null constants to be assigned to any pointer type
-            compatible = true;
-        }
-        // Second check: numeric type conversions (only for non-pointer types)
-        else if (decl_type->pointer_level == 0 && initializer->type->pointer_level == 0 &&
-                 !decl_type->is_array && !initializer->type->is_array &&
-                 decl_type->is_numeric() && initializer->type->is_numeric())
-        {
-        // Allow implicit numeric conversions but warn
-        compatible = true;
-        report_semantic_warning(line_no,
-                    "Implicit conversion in initialization of '%s' from %s to %s",
-                    var_name.c_str(), initializer->type->to_string().c_str(),
-                    decl_type->to_string().c_str());
-        }
-
-        // If not compatible, it's an error
-        if (!compatible)
-        {
-        report_semantic_error(line_no,
-                  "Cannot initialize '%s' of type %s with value of type %s",
-                  var_name.c_str(), decl_type->to_string().c_str(),
-                  initializer->type->to_string().c_str());
+            report_semantic_error(line_no,
+                      "Cannot initialize '%s' of type %s with value of type %s",
+                      var_name.c_str(), decl_type->to_string().c_str(),
+                      initializer->type->to_string().c_str());
             semantic_error_count++;
             return;
+        }
+        else if (should_warn_implicit_conversion(*decl_type, *initializer->type))
+        {
+            report_semantic_warning(line_no,
+                        "Implicit conversion in initialization of '%s' from %s to %s",
+                        var_name.c_str(), initializer->type->to_string().c_str(),
+                        decl_type->to_string().c_str());
         }
 
         // ========================================================================
@@ -330,33 +276,8 @@ void VariableDeclaration::handle_array_initialization(ArrayInitializerExpression
             continue;
         }
 
-        // Check type compatibility
-        bool elem_compatible = false;
-
-        if (decl_type->base_type == init_expr->type->base_type &&
-            decl_type->pointer_level == init_expr->type->pointer_level)
-        {
-            // For struct types, also check struct names match
-            if (decl_type->is_struct && init_expr->type->is_struct)
-            {
-                if (decl_type->struct_name == init_expr->type->struct_name && decl_type->is_union == init_expr->type->is_union)
-                {
-                    elem_compatible = true;
-                }
-            }
-            else if (!decl_type->is_struct && !init_expr->type->is_struct)
-            {
-                elem_compatible = true;
-            }
-        }
-        // Allow some numeric conversions
-        else if (decl_type->pointer_level == 0 && init_expr->type->pointer_level == 0 &&
-                 decl_type->is_numeric() && init_expr->type->is_numeric())
-        {
-            elem_compatible = true;
-        }
-
-        if (!elem_compatible)
+        // Use unified type compatibility checking
+        if (!is_type_compatible(*decl_type, *init_expr->type, true))
         {
             report_semantic_error(line_no,
                                   "Incompatible type in array initializer element %zu",

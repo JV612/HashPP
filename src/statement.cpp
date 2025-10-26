@@ -142,6 +142,16 @@ void IfStatement::generate_tac()
     // STEP 1: Generate code for condition
     condition->generate_tac();
     code = condition->code;
+    
+    // TYPE CHECK: Ensure condition is bool-compatible
+    if (condition->type && !is_bool_compatible(*condition->type))
+    {
+        SEM_ERROR(condition->line_no,
+                  "if condition must be bool-compatible (numeric, pointer, enum, or bool), got %s",
+                  condition->type->to_string().c_str());
+        semantic_error_count++;
+        return;
+    }
 
     // STEP 1.5: Handle non-boolean expressions in boolean context
     // If condition doesn't have truelist/falselist (e.g., simple variable or arithmetic),
@@ -269,6 +279,16 @@ void WhileStatement::generate_tac()
     // Generate code for condition
     condition->generate_tac();
     code = condition->code;
+    
+    // TYPE CHECK: Ensure condition is bool-compatible
+    if (condition->type && !is_bool_compatible(*condition->type))
+    {
+        SEM_ERROR(condition->line_no,
+                  "while condition must be bool-compatible (numeric, pointer, enum, or bool), got %s",
+                  condition->type->to_string().c_str());
+        semantic_error_count++;
+        return;
+    }
 
     // M2: start of body
     int M2 = tacGen.nextinstr();
@@ -370,6 +390,16 @@ void DoWhileStatement::generate_tac()
     // Generate code for condition
     condition->generate_tac();
     code.insert(code.end(), condition->code.begin(), condition->code.end());
+    
+    // TYPE CHECK: Ensure condition is bool-compatible
+    if (condition->type && !is_bool_compatible(*condition->type))
+    {
+        SEM_ERROR(condition->line_no,
+                  "do-while condition must be bool-compatible (numeric, pointer, enum, or bool), got %s",
+                  condition->type->to_string().c_str());
+        semantic_error_count++;
+        return;
+    }
 
     // Backpatch B.truelist to M1 (loop back)
     backpatch(condition->truelist, M1);
@@ -552,6 +582,16 @@ void ForStatement::generate_tac()
     {
         condition->generate_tac();
         code.insert(code.end(), condition->code.begin(), condition->code.end());
+        
+        // TYPE CHECK: Ensure condition is bool-compatible
+        if (condition->type && !is_bool_compatible(*condition->type))
+        {
+            SEM_ERROR(condition->line_no,
+                      "for loop condition must be bool-compatible (numeric, pointer, enum, or bool), got %s",
+                      condition->type->to_string().c_str());
+            semantic_error_count++;
+            return;
+        }
 
         // M2: start of body
         int M2 = tacGen.nextinstr();
@@ -946,8 +986,12 @@ void DefaultLabel::generate_tac()
 // ============================================================================
 
 SwitchStatement::SwitchStatement(Expression *expr, Statement *body_stmt)
-    : switch_expr(expr), body(body_stmt), default_label(-1), use_jump_table(false)
+    : switch_expr(expr), body(body_stmt), default_label(-2), use_jump_table(false)
 {
+    // default_label values:
+    // -2 = no default found yet (initial state)
+    // -1 = default found but position not set yet
+    // >=0 = default found and position set
 }
 
 SwitchStatement::~SwitchStatement()
@@ -967,14 +1011,37 @@ void SwitchStatement::collect_labels(Statement *stmt)
 
     if (CaseLabel *case_label = dynamic_cast<CaseLabel *>(stmt))
     {
-        // Found a case label - record it (we'll get the position during generation)
-        // For now, just mark it as -1, we'll update during generate_tac
+        // Found a case label - check for duplicates
+        int case_value = extract_constant_value(case_label->case_value);
+        
+        // Check if this case value already exists
+        for (const auto &existing_case : case_labels)
+        {
+            int existing_value = extract_constant_value(existing_case.first);
+            if (existing_value == case_value)
+            {
+                SEM_ERROR(case_label->line_no, 
+                          "Duplicate case value %d in switch statement", case_value);
+                semantic_error_count++;
+                return; // Don't add duplicate case
+            }
+        }
+        
+        // Add new case label (position will be updated during generate_tac)
         case_labels.push_back({case_label->case_value, -1});
     }
     else if (DefaultLabel *default_label_stmt = dynamic_cast<DefaultLabel *>(stmt))
     {
-        // Found default label
-        default_label = -1; // Will be updated during generate_tac
+        // Found default label - check if we already have one
+        if (default_label != -2) // -2 means no default found yet
+        {
+            SEM_ERROR(default_label_stmt->line_no, 
+                      "Multiple default labels in switch statement");
+            semantic_error_count++;
+            return; // Don't add duplicate default
+        }
+        
+        default_label = -1; // Mark as found, position will be updated during generate_tac
     }
     else if (CompoundStatement *compound = dynamic_cast<CompoundStatement *>(stmt))
     {
@@ -1212,7 +1279,7 @@ void SwitchStatement::generate_tac()
 
     // STEP 2: Collect case and default labels by scanning body structurally (without generating code)
     case_labels.clear();
-    default_label = -1;
+    default_label = -2; // Reset to "no default found yet"
     collect_labels(body);
 
     if (debug)
@@ -1538,58 +1605,20 @@ void ReturnStatement::generate_tac()
         // Type check: compare expr->type against current_function_return_type (value)
         if (expr->type)
         {
-            // Check for allowed promotions manually (Phase 1 rules)
-            bool compatible = false;
-
             const Type &retT = current_function_return_type;
             const Type &exprT = *expr->type;
 
-            // Pointer vs non-pointer must match
-            if (exprT.is_pointer() || exprT.is_array)
-            {
-                // For now, require function return to also be a pointer type with identical pointer level and base
-                if (retT.is_pointer() && !retT.is_array &&
-                    exprT.pointer_level == retT.pointer_level &&
-                    exprT.base_type == retT.base_type)
-                {
-                    compatible = true;
-                }
-            }
-            else if (retT.is_pointer() || retT.is_array)
-            {
-                // Returning non-pointer to pointer return type - incompatible
-                compatible = false;
-            }
-            else
-            {
-                // Neither side is a pointer: numeric compatibility
-                // Exact match on primitive base type
-                if (exprT.base_type == retT.base_type)
-                {
-                    compatible = true;
-                }
-                // Char to int promotion
-                else if (exprT.base_type == TYPE_CHAR && retT.base_type == TYPE_INT)
-                {
-                    compatible = true;
-                }
-                // Int to float promotion
-                else if (exprT.is_integer() && retT.base_type == TYPE_FLOAT)
-                {
-                    compatible = true;
-                }
-                // Integer types among themselves (int, char)
-                else if (exprT.is_integer() && retT.is_integer())
-                {
-                    compatible = true;
-                }
-            }
-
-            if (!compatible)
+            // Use unified type compatibility checking
+            if (!is_type_compatible(retT, exprT, true))
             {
                 SEM_ERROR(line_no, "Cannot return type '%s' from function expecting '%s'",
                           exprT.to_string().c_str(), retT.to_string().c_str());
                 semantic_error_count++;
+            }
+            else if (should_warn_implicit_conversion(retT, exprT))
+            {
+                SEM_WARN(line_no, "Implicit conversion in return from '%s' to '%s'",
+                         exprT.to_string().c_str(), retT.to_string().c_str());
             }
         }
         else

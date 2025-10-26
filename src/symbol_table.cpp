@@ -1112,45 +1112,229 @@ FunctionSignature *register_function(const std::string &name, const std::vector<
     return &function_signatures.back();
 }
 
+// ============================================================================
+// Unified Type Compatibility Checking
+// ============================================================================
+
+bool is_type_compatible(const Type &target_type, const Type &source_type, bool allow_implicit_conversions)
+{
+    // Error propagation
+    if (target_type.is_error() || source_type.is_error())
+        return false;
+
+    // ========================================================================
+    // EXACT TYPE MATCH
+    // ========================================================================
+    if (target_type.base_type == source_type.base_type &&
+        target_type.pointer_level == source_type.pointer_level &&
+        target_type.is_array == source_type.is_array &&
+        target_type.is_struct == source_type.is_struct &&
+        target_type.is_class == source_type.is_class)
+    {
+        // For struct/union types, also check that names and union flag match
+        if (target_type.is_struct && source_type.is_struct)
+        {
+            return (target_type.struct_name == source_type.struct_name && 
+                    target_type.is_union == source_type.is_union);
+        }
+        // For class types, check that names match
+        else if (target_type.is_class && source_type.is_class)
+        {
+            return (target_type.class_name == source_type.class_name);
+        }
+        // For primitive types (int, float, char, etc.) or identical complex types
+        else if (!target_type.is_struct && !source_type.is_struct && 
+                 !target_type.is_class && !source_type.is_class)
+        {
+            return true;
+        }
+        
+        return false; // Different complex type categories
+    }
+
+    // If not allowing implicit conversions, stop here
+    if (!allow_implicit_conversions)
+    {
+        return false;
+    }
+
+    // ========================================================================
+    // POINTER COMPATIBILITY RULES (C-style)
+    // ========================================================================
+    
+    // Rule 1: void* is compatible with any pointer type (both directions)
+    if (target_type.pointer_level > 0 && source_type.pointer_level > 0)
+    {
+        // void* -> T* (any pointer type)
+        if (source_type.base_type == TYPE_VOID && source_type.pointer_level == 1 &&
+            target_type.pointer_level == 1)
+        {
+            return true;
+        }
+        
+        // T* -> void* (any pointer type to void*)
+        if (target_type.base_type == TYPE_VOID && target_type.pointer_level == 1 &&
+            source_type.pointer_level == 1)
+        {
+            return true;
+        }
+    }
+    
+    // Rule 2: Null constant (represented as void*) can be assigned to any pointer type
+    if (target_type.pointer_level > 0 &&
+        source_type.base_type == TYPE_VOID && source_type.pointer_level == 1)
+    {
+        return true; // null constant to any pointer
+    }
+
+    // ========================================================================
+    // ARRAY DECAY TO POINTER
+    // ========================================================================
+    if (source_type.is_array && 
+        target_type.pointer_level > 0 && 
+        !target_type.is_array &&
+        source_type.array_dim == 1 &&
+        target_type.pointer_level == (source_type.pointer_level + 1))
+    {
+        // Array element type must match pointer target type
+        if (target_type.base_type == source_type.base_type &&
+            target_type.is_struct == source_type.is_struct &&
+            target_type.is_class == source_type.is_class)
+        {
+            // For struct/class arrays, names must match too
+            if (target_type.is_struct && source_type.is_struct)
+            {
+                return (target_type.struct_name == source_type.struct_name && 
+                        target_type.is_union == source_type.is_union);
+            }
+            else if (target_type.is_class && source_type.is_class)
+            {
+                return (target_type.class_name == source_type.class_name);
+            }
+            else if (!target_type.is_struct && !source_type.is_struct && 
+                     !target_type.is_class && !source_type.is_class)
+            {
+                return true; // Primitive array decay
+            }
+        }
+    }
+
+    // ========================================================================
+    // STRICT RULES: NO IMPLICIT CONVERSIONS FOR STRUCTURED TYPES
+    // ========================================================================
+    
+    // Struct/Class/Union types: NO implicit conversions between different types
+    // Note: Enums are excluded here because they should be compatible with integers
+    if ((target_type.is_struct || target_type.is_class) ||
+        (source_type.is_struct || source_type.is_class))
+    {
+        // These types can only be compatible through exact match (handled above)
+        return false;
+    }
+    
+    // ========================================================================
+    // ENUM ↔ INTEGER COMPATIBILITY (C-style)
+    // ========================================================================
+    if (target_type.pointer_level == 0 && source_type.pointer_level == 0 &&
+        !target_type.is_array && !source_type.is_array &&
+        !target_type.is_struct && !source_type.is_struct &&
+        !target_type.is_class && !source_type.is_class)
+    {
+        // enum -> int, char, bool conversions
+        if (source_type.base_type == TYPE_ENUM && 
+            (target_type.base_type == TYPE_INT || target_type.base_type == TYPE_CHAR || target_type.base_type == TYPE_BOOL))
+        {
+            return true;
+        }
+        
+        // int, char -> enum conversions  
+        if (target_type.base_type == TYPE_ENUM &&
+            (source_type.base_type == TYPE_INT || source_type.base_type == TYPE_CHAR))
+        {
+            return true;
+        }
+    }
+
+    // ========================================================================
+    // NUMERIC TYPE CONVERSIONS (C-style: int, char, float, bool)
+    // ========================================================================  
+    if (target_type.pointer_level == 0 && source_type.pointer_level == 0 &&
+        !target_type.is_array && !source_type.is_array &&
+        !target_type.is_struct && !source_type.is_struct &&
+        !target_type.is_class && !source_type.is_class &&
+        target_type.base_type != TYPE_ENUM && source_type.base_type != TYPE_ENUM &&
+        target_type.is_numeric() && source_type.is_numeric())
+    {
+        return true; // Allow numeric conversions: int ↔ char ↔ float ↔ bool
+    }
+
+    // ========================================================================
+    // ALL OTHER CASES: INCOMPATIBLE
+    // ========================================================================
+    return false;
+}
+
+bool should_warn_implicit_conversion(const Type &target_type, const Type &source_type)
+{
+    // Warn for potentially lossy numeric conversions (excluding enum conversions)
+    if (target_type.pointer_level == 0 && source_type.pointer_level == 0 &&
+        !target_type.is_array && !source_type.is_array &&
+        !target_type.is_struct && !source_type.is_struct &&
+        !target_type.is_class && !source_type.is_class &&
+        target_type.base_type != TYPE_ENUM && source_type.base_type != TYPE_ENUM &&
+        target_type.is_numeric() && source_type.is_numeric())
+    {
+        // Warn for potentially lossy conversions
+        // float/double -> int (truncation)
+        if (source_type.base_type == TYPE_FLOAT && target_type.is_integer())
+            return true;
+        
+        // Warn for any non-exact numeric type conversion
+        if (target_type.base_type != source_type.base_type)
+            return true;
+    }
+    
+    // Warn for enum ↔ integer conversions (valid but potentially unsafe)
+    if (target_type.pointer_level == 0 && source_type.pointer_level == 0 &&
+        !target_type.is_array && !source_type.is_array &&
+        !target_type.is_struct && !source_type.is_struct &&
+        !target_type.is_class && !source_type.is_class)
+    {
+        // enum -> int/char/bool (warn about potential value range issues)
+        if (source_type.base_type == TYPE_ENUM && 
+            (target_type.base_type == TYPE_INT || target_type.base_type == TYPE_CHAR || target_type.base_type == TYPE_BOOL))
+        {
+            return true;
+        }
+        
+        // int/char -> enum (warn about potential invalid enum values)
+        if (target_type.base_type == TYPE_ENUM &&
+            (source_type.base_type == TYPE_INT || source_type.base_type == TYPE_CHAR))
+        {
+            return true;
+        }
+    }
+    
+    // Warn for pointer conversions involving void*
+    if (target_type.pointer_level > 0 && source_type.pointer_level > 0)
+    {
+        // void* <-> T* conversions (warn about potential loss of type safety)
+        if ((source_type.base_type == TYPE_VOID && source_type.pointer_level == 1 &&
+             target_type.pointer_level == 1 && target_type.base_type != TYPE_VOID) ||
+            (target_type.base_type == TYPE_VOID && target_type.pointer_level == 1 &&
+             source_type.pointer_level == 1 && source_type.base_type != TYPE_VOID))
+        {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+// Backward compatibility wrapper for existing code
 static bool type_compatible(const Type &expected, const Type &actual)
 {
-    if (expected.is_error() || actual.is_error())
-        return false;
-
-    // Handle struct/union/class types - must match exactly
-    if (expected.is_struct && actual.is_struct)
-    {
-        // Both are structs/unions - must have same name and same union flag
-        return expected.struct_name == actual.struct_name && expected.is_union == actual.is_union;
-    }
-    if (expected.is_class && actual.is_class)
-    {
-        // Both are classes - must have same name
-        return expected.class_name == actual.class_name;
-    }
-    // If one is struct/class and other is not, incompatible
-    if (expected.is_struct != actual.is_struct || expected.is_class != actual.is_class)
-        return false;
-
-    // Handle array decay: array T[N] decays to pointer T*
-    if (expected.is_pointer() && actual.is_array)
-    {
-        // Array decays to pointer of same base type
-        // char[100] -> char*
-        return expected.base_type == actual.base_type && expected.pointer_level == 1;
-    }
-
-    if (expected.is_pointer() || expected.is_array || actual.is_pointer() || actual.is_array)
-    {
-        // For now require exact pointer level and base type match
-        return expected.pointer_level == actual.pointer_level && expected.base_type == actual.base_type && expected.is_array == actual.is_array && expected.array_dim == actual.array_dim;
-    }
-    if (expected.base_type == actual.base_type)
-        return true;
-    // Allow numeric promotions (char < int < float)
-    if (expected.is_numeric() && actual.is_numeric())
-        return true;
-    return false;
+    return is_type_compatible(expected, actual, true);
 }
 
 int find_function_match(const std::string &name, const std::vector<Type> &argTypes)
@@ -1477,4 +1661,44 @@ void register_builtin_io_functions()
 
     if (debug)
         cout << "[COMPILER] Registered 9 built-in I/O functions" << endl;
+}
+
+// ============================================================================
+// Bool Compatibility Checking
+// ============================================================================
+
+bool is_bool_compatible(const Type& type) {
+    // C-style bool compatibility rules:
+    // - Numeric types (int, char, float, double) are bool-compatible (0 = false, non-zero = true)
+    // - Pointers are bool-compatible (NULL = false, non-NULL = true)  
+    // - Enums are bool-compatible (like integers)
+    // - bool is obviously bool-compatible
+    // - struct/class/union are NOT bool-compatible (C standard)
+    
+    if (type.is_error()) {
+        return false;
+    }
+    
+    // Pointers (including arrays which decay to pointers) are bool-compatible
+    if (type.is_pointer() || type.is_array) {
+        return true;
+    }
+    
+    // Check base types
+    switch (type.base_type) {
+        case TYPE_INT:
+        case TYPE_CHAR:  
+        case TYPE_FLOAT:
+        case TYPE_BOOL:
+        case TYPE_ENUM:
+            return true;
+            
+        case TYPE_VOID:
+            // void is not bool-compatible unless it's a pointer (handled above)
+            return false;
+            
+        default:
+            // struct/class/union are not bool-compatible
+            return false;
+    }
 }

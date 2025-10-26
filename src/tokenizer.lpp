@@ -170,7 +170,7 @@ ESCAPE      \\[abfnrtv0\\'\\"]
 "sizeof"    { add_token(yylineno, "sizeof", "SIZEOF"); return SIZEOF; }
 "true"      { add_token(yylineno, "true", "TRUE"); yylval.ival = 1; return BOOL_TRUE; }
 "false"     { add_token(yylineno, "false", "FALSE"); yylval.ival = 0; return BOOL_FALSE; }
-"null"      { add_token(yylineno, "null", "NULL"); yylval.ptr = NULL; return NULL_CONSTANT; }
+"NULL"      { add_token(yylineno, "null", "NULL"); yylval.ptr = NULL; return NULL_CONSTANT; }
 "nullptr"   { add_token(yylineno, "nullptr", "NULLPTR"); yylval.ptr = NULL; return NULLPTR_CONSTANT; }
 "const"     { add_token(yylineno, "const", "CONST"); return CONST; }
 "volatile"  { add_token(yylineno, "volatile", "VOLATILE"); return VOLATILE; }
