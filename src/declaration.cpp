@@ -6,6 +6,19 @@
 
 using namespace std;
 
+extern int yylineno;
+
+namespace
+{
+    int effective_line(int line)
+    {
+        return line > 0 ? line : yylineno;
+    }
+}
+
+#define SEM_ERROR(line, ...) report_semantic_error(effective_line(line), __VA_ARGS__)
+#define SEM_WARN(line, ...) report_semantic_warning(effective_line(line), __VA_ARGS__)
+
 // ============================================================================
 // Declaration Implementation
 // ============================================================================
@@ -160,9 +173,9 @@ void VariableDeclaration::generate_tac()
         // Check if initializer has a type
         if (!initializer->type)
         {
-            report_semantic_error(line_no,
-                                   "Missing type information in initializer for '%s'",
-                                   var_name.c_str());
+            SEM_ERROR(line_no,
+                      "Missing type information in initializer for '%s'",
+                      var_name.c_str());
             semantic_error_count++;
             return;
         }
@@ -176,7 +189,7 @@ void VariableDeclaration::generate_tac()
         // Use unified type compatibility checking
         if (!is_type_compatible(*decl_type, *initializer->type, true))
         {
-            report_semantic_error(line_no,
+            SEM_ERROR(line_no,
                       "Cannot initialize '%s' of type %s with value of type %s",
                       var_name.c_str(), decl_type->to_string().c_str(),
                       initializer->type->to_string().c_str());
@@ -186,9 +199,9 @@ void VariableDeclaration::generate_tac()
         else if (should_warn_implicit_conversion(*decl_type, *initializer->type))
         {
             report_semantic_warning(line_no,
-                        "Implicit conversion in initialization of '%s' from %s to %s",
-                        var_name.c_str(), initializer->type->to_string().c_str(),
-                        decl_type->to_string().c_str());
+                                    "Implicit conversion in initialization of '%s' from %s to %s",
+                                    var_name.c_str(), initializer->type->to_string().c_str(),
+                                    decl_type->to_string().c_str());
         }
 
         // ========================================================================
@@ -243,9 +256,9 @@ void VariableDeclaration::handle_array_initialization(ArrayInitializerExpression
     // Check that we don't have too many initializers
     if (array_init->initializers.size() > static_cast<size_t>(array_size))
     {
-        report_semantic_error(line_no,
-                              "Too many initializers for array '%s' (expected %d, got %zu)",
-                              var_name.c_str(), array_size, array_init->initializers.size());
+        SEM_ERROR(line_no,
+                  "Too many initializers for array '%s' (expected %d, got %zu)",
+                  var_name.c_str(), array_size, array_init->initializers.size());
         semantic_error_count++;
         return;
     }
@@ -269,9 +282,9 @@ void VariableDeclaration::handle_array_initialization(ArrayInitializerExpression
         // Type check the initializer
         if (!init_expr->type)
         {
-            report_semantic_error(line_no,
-                                  "Missing type in array initializer element %zu",
-                                  i);
+            SEM_ERROR(line_no,
+                      "Missing type in array initializer element %zu",
+                      i);
             semantic_error_count++;
             continue;
         }
@@ -279,9 +292,9 @@ void VariableDeclaration::handle_array_initialization(ArrayInitializerExpression
         // Use unified type compatibility checking
         if (!is_type_compatible(*decl_type, *init_expr->type, true))
         {
-            report_semantic_error(line_no,
-                                  "Incompatible type in array initializer element %zu",
-                                  i);
+            SEM_ERROR(line_no,
+                      "Incompatible type in array initializer element %zu",
+                      i);
             semantic_error_count++;
             continue;
         }
@@ -312,7 +325,10 @@ void VariableDeclaration::handle_array_initialization(ArrayInitializerExpression
 // ============================================================================
 
 VariableDeclaration *create_variable_declaration(Type *type, const string &name,
-                                                 Expression *init)
+                                                 Expression *init, int line, int col)
 {
-    return new VariableDeclaration(type, name, init);
+    VariableDeclaration *decl = new VariableDeclaration(type, name, init);
+    decl->line_no = line;
+    decl->column_no = col;
+    return decl;
 }

@@ -298,7 +298,7 @@ public:
     void generate_tac() override;
 };
 
-CallExpression *create_call_expression(const std::string &name, const std::vector<Expression *> &args);
+CallExpression *create_call_expression(const std::string &name, const std::vector<Expression *> &args, int line = 0, int col = 0);
 
 // ============================================================================
 // Method Call Expression - object.method(args)
@@ -306,9 +306,9 @@ CallExpression *create_call_expression(const std::string &name, const std::vecto
 class MethodCallExpression : public Expression
 {
 public:
-    Expression *object;         // The object whose method is being called
-    std::string method_name;    // Name of the method
-    std::vector<Expression *> args;  // Arguments (excluding implicit 'this')
+    Expression *object;             // The object whose method is being called
+    std::string method_name;        // Name of the method
+    std::vector<Expression *> args; // Arguments (excluding implicit 'this')
 
     MethodCallExpression(Expression *obj, const std::string &method, const std::vector<Expression *> &a)
         : object(obj), method_name(method), args(a) {}
@@ -326,7 +326,7 @@ public:
     void generate_tac() override;
 };
 
-MethodCallExpression *create_method_call_expression(Expression *object, const char *method_name, const std::vector<Expression *> *args);
+MethodCallExpression *create_method_call_expression(Expression *object, const char *method_name, const std::vector<Expression *> *args, int line = 0, int col = 0);
 
 // ============================================================================
 // Member Access Expressions - struct.member and ptr->member
@@ -390,7 +390,7 @@ PrimaryExpression *create_primary_expression(const std::string &name);
 PrimaryExpression *create_primary_expression(int value);
 PrimaryExpression *create_primary_expression(char value);
 PrimaryExpression *create_primary_expression(double value);
-PrimaryExpression *create_string_literal_expression(const std::string &str);
+PrimaryExpression *create_string_literal_expression(const std::string &str, int line = 0, int col = 0);
 
 // Overloaded versions with location info
 PrimaryExpression *create_primary_expression(const std::string &name, int line, int col);
@@ -399,21 +399,21 @@ PrimaryExpression *create_primary_expression(char value, int line, int col);
 PrimaryExpression *create_primary_expression(double value, int line, int col);
 
 // Create parenthesized expression
-PrimaryExpression *create_paren_expression(Expression *expr);
+PrimaryExpression *create_paren_expression(Expression *expr, int line = 0, int col = 0);
 
 // Create special constants
-PrimaryExpression *create_bool_constant_expression(bool value);
-PrimaryExpression *create_null_constant_expression();
+PrimaryExpression *create_bool_constant_expression(bool value, int line = 0, int col = 0);
+PrimaryExpression *create_null_constant_expression(int line = 0, int col = 0);
 
 // Create other expressions
-BinaryExpression *create_binary_expression(Expression *left, TACOp op, Expression *right);
-UnaryExpression *create_unary_expression(TACOp op, Expression *expr);
-PostfixExpression *create_postfix_expression(TACOp op, Expression *expr);
-AssignmentExpression *create_assignment_expression(const std::string &var, Expression *rhs);
-GeneralAssignmentExpression *create_general_assignment_expression(Expression *lhs, Expression *rhs);
-ArrayAccessExpression *create_array_access_expression(Expression *array, Expression *index);
-ArrayInitializerExpression *create_array_initializer_expression(const std::vector<Expression *> &init_list);
-MemberAccessExpression *create_member_access_expression(Expression *struct_expr, const std::string &member);
-MemberAccessPtrExpression *create_member_access_ptr_expression(Expression *ptr_expr, const std::string &member);
+BinaryExpression *create_binary_expression(Expression *left, TACOp op, Expression *right, int line = 0, int col = 0);
+UnaryExpression *create_unary_expression(TACOp op, Expression *expr, int line = 0, int col = 0);
+PostfixExpression *create_postfix_expression(TACOp op, Expression *expr, int line = 0, int col = 0);
+AssignmentExpression *create_assignment_expression(const std::string &var, Expression *rhs, int line = 0, int col = 0);
+GeneralAssignmentExpression *create_general_assignment_expression(Expression *lhs, Expression *rhs, int line = 0, int col = 0);
+ArrayAccessExpression *create_array_access_expression(Expression *array, Expression *index, int line = 0, int col = 0);
+ArrayInitializerExpression *create_array_initializer_expression(const std::vector<Expression *> &init_list, int line = 0, int col = 0);
+MemberAccessExpression *create_member_access_expression(Expression *struct_expr, const std::string &member, int line = 0, int col = 0);
+MemberAccessPtrExpression *create_member_access_ptr_expression(Expression *ptr_expr, const std::string &member, int line = 0, int col = 0);
 
 #endif // EXPRESSION_H

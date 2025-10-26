@@ -70,10 +70,10 @@ class ArrayInitializerExpression;
 class VariableDeclaration : public Declaration
 {
 public:
-    std::string var_name;    // Name of the variable
-    Expression *initializer; // Initial value (nullptr if no initializer)
+    std::string var_name;              // Name of the variable
+    Expression *initializer;           // Initial value (nullptr if no initializer)
     Symbol *inserted_symbol = nullptr; // Cached symbol from insert stage
-    bool is_static = false;  // Whether this is a static variable
+    bool is_static = false;            // Whether this is a static variable
 
     VariableDeclaration(Type *t, const std::string &name, Expression *init = nullptr, bool static_var = false);
     virtual ~VariableDeclaration();
@@ -91,6 +91,6 @@ private:
 // ============================================================================
 
 VariableDeclaration *create_variable_declaration(Type *type, const std::string &name,
-                                                 Expression *init = nullptr);
+                                                 Expression *init = nullptr, int line = 0, int col = 0);
 
 #endif // DECLARATION_H

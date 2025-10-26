@@ -24,6 +24,12 @@
 #include <vector>
 using namespace std;
 
+// Update location tracking for Bison
+#define YY_USER_ACTION \
+    yylloc.first_line = yylloc.last_line = yylineno; \
+    yylloc.first_column = yylloc.last_column; \
+    yylloc.last_column += yyleng;
+
 // ============================================================================
 // NOTE: The code below is from your original tokenizer.lpp
 // It handles token tracking and type management

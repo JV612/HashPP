@@ -418,7 +418,7 @@ class CompoundStatement : public Statement
 public:
     std::vector<Statement *> statements; // List of statements in block
     // Track constructed local objects (in construction order) for RAII teardown
-    std::vector<Symbol*> constructed_locals;
+    std::vector<Symbol *> constructed_locals;
 
     CompoundStatement();
     virtual ~CompoundStatement();
@@ -579,25 +579,25 @@ public:
 // Helper Functions - Statement Node Creation
 // ============================================================================
 
-IfStatement *create_if_statement(Expression *cond, Statement *then_stmt, Statement *else_stmt = nullptr);
-WhileStatement *create_while_statement(Expression *cond, Statement *body);
-DoWhileStatement *create_dowhile_statement(Statement *body, Expression *cond);
-UntilStatement *create_until_statement(Expression *cond, Statement *body);
-ForStatement *create_for_statement(Statement *init, Expression *cond, Expression *post, Statement *body);
-BreakStatement *create_break_statement();
-ContinueStatement *create_continue_statement();
-DeclarationStatement *create_declaration_statement(Declaration *decl);
-ExpressionStatement *create_expression_statement(Expression *expr = nullptr);
-CompoundStatement *create_compound_statement();
-CaseLabel *create_case_label(Expression *value, Statement *stmt);
-DefaultLabel *create_default_label(Statement *stmt);
-SwitchStatement *create_switch_statement(Expression *expr, Statement *body);
-ReturnStatement *create_return_statement(Expression *expr = nullptr);
-GotoStatement *create_goto_statement(const std::string &label);
-LabelStatement *create_label_statement(const std::string &label, Statement *stmt);
+IfStatement *create_if_statement(Expression *cond, Statement *then_stmt, Statement *else_stmt = nullptr, int line = 0, int col = 0);
+WhileStatement *create_while_statement(Expression *cond, Statement *body, int line = 0, int col = 0);
+DoWhileStatement *create_dowhile_statement(Statement *body, Expression *cond, int line = 0, int col = 0);
+UntilStatement *create_until_statement(Expression *cond, Statement *body, int line = 0, int col = 0);
+ForStatement *create_for_statement(Statement *init, Expression *cond, Expression *post, Statement *body, int line = 0, int col = 0);
+BreakStatement *create_break_statement(int line = 0, int col = 0);
+ContinueStatement *create_continue_statement(int line = 0, int col = 0);
+DeclarationStatement *create_declaration_statement(Declaration *decl, int line = 0, int col = 0);
+ExpressionStatement *create_expression_statement(Expression *expr = nullptr, int line = 0, int col = 0);
+CompoundStatement *create_compound_statement(int line = 0, int col = 0);
+CaseLabel *create_case_label(Expression *value, Statement *stmt, int line = 0, int col = 0);
+DefaultLabel *create_default_label(Statement *stmt, int line = 0, int col = 0);
+SwitchStatement *create_switch_statement(Expression *expr, Statement *body, int line = 0, int col = 0);
+ReturnStatement *create_return_statement(Expression *expr = nullptr, int line = 0, int col = 0);
+GotoStatement *create_goto_statement(const std::string &label, int line = 0, int col = 0);
+LabelStatement *create_label_statement(const std::string &label, Statement *stmt, int line = 0, int col = 0);
 
 // Destructor tracking helpers (implemented in statement.cpp)
 // Called by VariableDeclaration codegen when a class object is constructed
-void register_constructed_local(Symbol* sym);
+void register_constructed_local(Symbol *sym);
 
 #endif // STATEMENT_H

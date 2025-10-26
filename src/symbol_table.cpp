@@ -28,7 +28,7 @@ bool current_function_has_return = false;
 bool debug = false;
 bool function_debug = false;
 bool method_debug = false;
-bool symbol_debug = false;
+bool symbol_debug = true;
 bool ast_debug = false;
 std::vector<FunctionSignature> function_signatures;
 FunctionSignature *current_function_signature = nullptr;

@@ -11,37 +11,58 @@ extern int yylineno;
 
 namespace
 {
-int effective_line(int line)
-{
-    return line > 0 ? line : yylineno;
-}
+    int effective_line(int line)
+    {
+        return line > 0 ? line : yylineno;
+    }
 }
 
 #define SEM_ERROR(line, ...) report_semantic_error(effective_line(line), __VA_ARGS__)
 #define SEM_WARN(line, ...) report_semantic_warning(effective_line(line), __VA_ARGS__)
 
 // Helper function to get operator name for error messages
-const char* get_operator_name(TACOp op) {
-    switch (op) {
-        case TAC_ADD: return "+";
-        case TAC_SUB: return "-";
-        case TAC_MUL: return "*";
-        case TAC_DIV: return "/";
-        case TAC_MOD: return "%";
-        case TAC_BITWISE_AND: return "&";
-        case TAC_BITWISE_OR: return "|";
-        case TAC_BITWISE_XOR: return "^";
-        case TAC_LEFT_SHIFT: return "<<";
-        case TAC_RIGHT_SHIFT: return ">>";
-        case TAC_LT: return "<";
-        case TAC_GT: return ">";
-        case TAC_LE: return "<=";
-        case TAC_GE: return ">=";
-        case TAC_EQ: return "==";
-        case TAC_NE: return "!=";
-        case TAC_LOGICAL_AND: return "&&";
-        case TAC_LOGICAL_OR: return "||";
-        default: return "unknown";
+const char *get_operator_name(TACOp op)
+{
+    switch (op)
+    {
+    case TAC_ADD:
+        return "+";
+    case TAC_SUB:
+        return "-";
+    case TAC_MUL:
+        return "*";
+    case TAC_DIV:
+        return "/";
+    case TAC_MOD:
+        return "%";
+    case TAC_BITWISE_AND:
+        return "&";
+    case TAC_BITWISE_OR:
+        return "|";
+    case TAC_BITWISE_XOR:
+        return "^";
+    case TAC_LEFT_SHIFT:
+        return "<<";
+    case TAC_RIGHT_SHIFT:
+        return ">>";
+    case TAC_LT:
+        return "<";
+    case TAC_GT:
+        return ">";
+    case TAC_LE:
+        return "<=";
+    case TAC_GE:
+        return ">=";
+    case TAC_EQ:
+        return "==";
+    case TAC_NE:
+        return "!=";
+    case TAC_LOGICAL_AND:
+        return "&&";
+    case TAC_LOGICAL_OR:
+        return "||";
+    default:
+        return "unknown";
     }
 }
 
@@ -186,14 +207,14 @@ void PrimaryExpression::generate_tac()
         if (current_method_signature != nullptr)
         {
             // Look up the class this method belongs to
-            ClassType* class_type = lookup_class_in_scope(current_method_signature->class_name);
+            ClassType *class_type = lookup_class_in_scope(current_method_signature->class_name);
             if (class_type)
             {
                 // Check if this identifier is a class member
                 bool is_member = false;
                 Type member_type;
                 size_t member_offset = 0;
-                
+
                 for (size_t i = 0; i < class_type->members.size(); i++)
                 {
                     if (class_type->members[i].first == name)
@@ -204,28 +225,28 @@ void PrimaryExpression::generate_tac()
                         break;
                     }
                 }
-                
+
                 if (is_member)
                 {
                     // Access member via implicit 'this' pointer (param_0)
                     // Generate: temp = *(param_0 + offset)
                     TACOperand this_ptr(TACOperand::OPERAND_IDENTIFIER, "param_0");
                     TACOperand offset_operand(TACOperand::OPERAND_CONSTANT, std::to_string(member_offset));
-                    
+
                     // Calculate address: this + offset
                     TACOperand addr_temp = tacGen.newTemp();
                     tacGen.emit(TAC_ADD, addr_temp, this_ptr, offset_operand);
-                    
+
                     // Dereference to get member value
                     TACOperand member_temp = tacGen.newTemp();
                     tacGen.emit(TAC_DEREF, member_temp, addr_temp, TACOperand());
-                    
+
                     result = new TACOperand(member_temp);
                     type = new Type(member_type);
-                    
+
                     if (debug)
                     {
-                        cout << "[AST] Member access via 'this': " << name 
+                        cout << "[AST] Member access via 'this': " << name
                              << " (offset " << member_offset << ")" << endl;
                     }
                     break;
@@ -284,7 +305,8 @@ void PrimaryExpression::generate_tac()
         type = new Type(TYPE_CHAR);
 
         int ascii_value = (int)char_value;
-        if (debug) {
+        if (debug)
+        {
             cout << "[AST] Character constant: " << char_repr
                  << " (ASCII: " << ascii_value << ")" << endl;
         }
@@ -295,7 +317,8 @@ void PrimaryExpression::generate_tac()
     {
         result = new TACOperand(TACOperand::OPERAND_CONSTANT, std::to_string(float_value));
         type = new Type(TYPE_FLOAT);
-        if (debug) {
+        if (debug)
+        {
             cout << "[AST] Float constant: " << float_value << endl;
         }
         break;
@@ -307,7 +330,8 @@ void PrimaryExpression::generate_tac()
         result = new TACOperand(TACOperand::OPERAND_STRING, string_value);
         // String literals have type "pointer to char" (char*)
         type = new Type(TYPE_CHAR, 1); // base_type = char, pointer_level = 1
-        if (debug) {
+        if (debug)
+        {
             cout << "[AST] String literal: " << string_value << endl;
         }
         break;
@@ -538,14 +562,14 @@ void BinaryExpression::generate_tac()
     bool right_is_array = right->type->is_array;
     bool left_is_integer = left->type->is_integer();
     bool right_is_integer = right->type->is_integer();
-    
+
     // Check for invalid array operations BEFORE allowing decay
     if (left_is_array || right_is_array)
     {
         // Arrays can ONLY be used in: +, -, ==, !=, <, >, <=, >=
         // All other operations (*, /, %, &, |, ^, <<, >>) are INVALID
-        if (op != TAC_ADD && op != TAC_SUB && 
-            op != TAC_LT && op != TAC_GT && op != TAC_LE && op != TAC_GE && 
+        if (op != TAC_ADD && op != TAC_SUB &&
+            op != TAC_LT && op != TAC_GT && op != TAC_LE && op != TAC_GE &&
             op != TAC_EQ && op != TAC_NE)
         {
             SEM_ERROR(line_no,
@@ -556,20 +580,20 @@ void BinaryExpression::generate_tac()
             result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");
             return;
         }
-        
+
         // Additional validation: array * array, array / array, etc. are invalid
         if ((op == TAC_MUL || op == TAC_DIV || op == TAC_MOD) && (left_is_array && right_is_array))
         {
             SEM_ERROR(line_no,
                       "Invalid operation '%s' between two arrays",
                       get_operator_name(op));
-            semantic_error_count++;  
+            semantic_error_count++;
             type = new Type(TYPE_ERROR);
             result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");
             return;
         }
     }
-    
+
     // NOW we can allow array-to-pointer decay for valid operations
     bool left_is_pointer_like = left_is_pointer || left_is_array;
     bool right_is_pointer_like = right_is_pointer || right_is_array;
@@ -605,7 +629,7 @@ void BinaryExpression::generate_tac()
     // ========================================================================
     // REJECT INVALID POINTER/ARRAY COMBINATIONS
     // ========================================================================
-    
+
     // Addition: reject pointer + pointer, array + pointer, array + array (not handled above)
     if (op == TAC_ADD && left_is_pointer_like && right_is_pointer_like)
     {
@@ -617,7 +641,7 @@ void BinaryExpression::generate_tac()
         result = new TACOperand(TACOperand::OPERAND_CONSTANT, "0");
         return;
     }
-    
+
     // Subtraction: reject int - pointer/array (reverse subtraction not allowed)
     if (op == TAC_SUB && left_is_integer && right_is_pointer_like)
     {
@@ -751,7 +775,7 @@ void BinaryExpression::generate_tac()
             valid = true;
         }
         // Case 2: Both operands are pointers/arrays of compatible types
-        else if ((left->type->is_pointer() || left->type->is_array) && 
+        else if ((left->type->is_pointer() || left->type->is_array) &&
                  (right->type->is_pointer() || right->type->is_array))
         {
             // Pointer/array comparison rules:
@@ -1490,10 +1514,10 @@ void PostfixExpression::generate_tac()
 
     if (!expr->type->is_numeric() && !expr->type->is_pointer())
     {
-    SEM_ERROR(line_no,
-          "Postfix %s requires numeric or pointer type, got %s",
-          (op == TAC_POST_INC ? "++" : "--"),
-          expr->type->to_string().c_str());
+        SEM_ERROR(line_no,
+                  "Postfix %s requires numeric or pointer type, got %s",
+                  (op == TAC_POST_INC ? "++" : "--"),
+                  expr->type->to_string().c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
@@ -1548,7 +1572,7 @@ AssignmentExpression::AssignmentExpression(const string &var, Expression *rhs_ex
 {
     // Look up LHS symbol during construction (while in correct scope)
     lhs_symbol = lookup_symbol(var);
-    
+
     // If not found as local variable and we're inside a method, it might be a member
     if (!lhs_symbol && current_method_signature != nullptr)
     {
@@ -1596,11 +1620,11 @@ void AssignmentExpression::generate_tac()
     bool is_member_assignment = false;
     Type member_type;
     size_t member_offset = 0;
-    
+
     if (!lhs_symbol && current_method_signature != nullptr)
     {
         // Look up the class this method belongs to
-        ClassType* class_type = lookup_class_in_scope(current_method_signature->class_name);
+        ClassType *class_type = lookup_class_in_scope(current_method_signature->class_name);
         if (class_type)
         {
             // Check if this identifier is a class member
@@ -1616,7 +1640,7 @@ void AssignmentExpression::generate_tac()
             }
         }
     }
-    
+
     // Look up LHS variable in symbol table (use cached symbol from construction)
     Symbol *sym = lhs_symbol;
     if (!sym && !is_member_assignment)
@@ -1664,17 +1688,17 @@ void AssignmentExpression::generate_tac()
         TACOperand addr_temp = tacGen.newTemp();
         tacGen.emit(TAC_ADD, addr_temp, this_ptr, offset_operand);
         code.push_back(tacGen.getCode().back());
-        
+
         // 2. Store value at address: *addr = rhs
         tacGen.emit(TAC_DEREF_STORE, addr_temp, *rhs->result, TACOperand());
         code.push_back(tacGen.getCode().back());
-        
+
         // Result is the address (for chained assignments)
         result = new TACOperand(addr_temp);
-        
+
         if (debug)
         {
-            cout << "[AST] Member assignment via 'this': " << lhs_name 
+            cout << "[AST] Member assignment via 'this': " << lhs_name
                  << " (offset " << member_offset << ")" << endl;
         }
     }
@@ -1716,9 +1740,12 @@ PrimaryExpression *create_primary_expression(char value)
     return new PrimaryExpression(value);
 }
 
-PrimaryExpression *create_string_literal_expression(const string &str)
+PrimaryExpression *create_string_literal_expression(const string &str, int line, int col)
 {
-    return new PrimaryExpression(str, true);
+    PrimaryExpression *expr = new PrimaryExpression(str, true);
+    expr->line_no = line;
+    expr->column_no = col;
+    return expr;
 }
 
 PrimaryExpression *create_primary_expression(double value)
@@ -1759,36 +1786,54 @@ PrimaryExpression *create_primary_expression(double value, int line, int col)
     return expr;
 }
 
-PrimaryExpression *create_paren_expression(Expression *expr)
+PrimaryExpression *create_paren_expression(Expression *expr, int line, int col)
 {
-    return new PrimaryExpression(expr);
+    PrimaryExpression *paren = new PrimaryExpression(expr);
+    paren->line_no = line;
+    paren->column_no = col;
+    return paren;
 }
 
-PrimaryExpression *create_bool_constant_expression(bool value)
+PrimaryExpression *create_bool_constant_expression(bool value, int line, int col)
 {
     // Create a boolean constant (true/false)
-    return new PrimaryExpression(value);
+    PrimaryExpression *expr = new PrimaryExpression(value);
+    expr->line_no = line;
+    expr->column_no = col;
+    return expr;
 }
 
-PrimaryExpression *create_null_constant_expression()
+PrimaryExpression *create_null_constant_expression(int line, int col)
 {
     // Create a null pointer constant
-    return new PrimaryExpression(); // Uses the special null constructor
+    PrimaryExpression *expr = new PrimaryExpression(); // Uses the special null constructor
+    expr->line_no = line;
+    expr->column_no = col;
+    return expr;
 }
 
-BinaryExpression *create_binary_expression(Expression *left, TACOp op, Expression *right)
+BinaryExpression *create_binary_expression(Expression *left, TACOp op, Expression *right, int line, int col)
 {
-    return new BinaryExpression(left, op, right);
+    BinaryExpression *expr = new BinaryExpression(left, op, right);
+    expr->line_no = line;
+    expr->column_no = col;
+    return expr;
 }
 
-UnaryExpression *create_unary_expression(TACOp op, Expression *expr)
+UnaryExpression *create_unary_expression(TACOp op, Expression *expr, int line, int col)
 {
-    return new UnaryExpression(op, expr);
+    UnaryExpression *unary = new UnaryExpression(op, expr);
+    unary->line_no = line;
+    unary->column_no = col;
+    return unary;
 }
 
-AssignmentExpression *create_assignment_expression(const string &var, Expression *rhs)
+AssignmentExpression *create_assignment_expression(const string &var, Expression *rhs, int line, int col)
 {
-    return new AssignmentExpression(var, rhs);
+    AssignmentExpression *expr = new AssignmentExpression(var, rhs);
+    expr->line_no = line;
+    expr->column_no = col;
+    return expr;
 }
 
 // ============================================================================
@@ -2013,9 +2058,12 @@ void GeneralAssignmentExpression::generate_tac()
     }
 }
 
-GeneralAssignmentExpression *create_general_assignment_expression(Expression *lhs, Expression *rhs)
+GeneralAssignmentExpression *create_general_assignment_expression(Expression *lhs, Expression *rhs, int line, int col)
 {
-    return new GeneralAssignmentExpression(lhs, rhs);
+    GeneralAssignmentExpression *expr = new GeneralAssignmentExpression(lhs, rhs);
+    expr->line_no = line;
+    expr->column_no = col;
+    return expr;
 }
 
 // ============================================================================
@@ -2077,8 +2125,8 @@ void ArrayAccessExpression::generate_tac()
             name_hint = std::string(" '") + prim->name + std::string("'");
         }
 
-      SEM_ERROR(err_line, "Subscripted value is not an array or pointer%s (type: %s)",
-            name_hint.c_str(), array->type->to_string().c_str());
+        SEM_ERROR(err_line, "Subscripted value is not an array or pointer%s (type: %s)",
+                  name_hint.c_str(), array->type->to_string().c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
@@ -2149,9 +2197,12 @@ void ArrayAccessExpression::generate_tac()
     }
 }
 
-ArrayAccessExpression *create_array_access_expression(Expression *array, Expression *index)
+ArrayAccessExpression *create_array_access_expression(Expression *array, Expression *index, int line, int col)
 {
-    return new ArrayAccessExpression(array, index);
+    ArrayAccessExpression *expr = new ArrayAccessExpression(array, index);
+    expr->line_no = line;
+    expr->column_no = col;
+    return expr;
 }
 
 // ============================================================================
@@ -2213,9 +2264,12 @@ void ArrayInitializerExpression::generate_tac()
     // are handled specially in variable declarations
 }
 
-ArrayInitializerExpression *create_array_initializer_expression(const std::vector<Expression *> &init_list)
+ArrayInitializerExpression *create_array_initializer_expression(const std::vector<Expression *> &init_list, int line, int col)
 {
-    return new ArrayInitializerExpression(init_list);
+    ArrayInitializerExpression *expr = new ArrayInitializerExpression(init_list);
+    expr->line_no = line;
+    expr->column_no = col;
+    return expr;
 }
 
 // ============================================================================
@@ -2283,9 +2337,12 @@ void CallExpression::generate_tac()
     }
 }
 
-CallExpression *create_call_expression(const std::string &name, const std::vector<Expression *> &args)
+CallExpression *create_call_expression(const std::string &name, const std::vector<Expression *> &args, int line, int col)
 {
-    return new CallExpression(name, args);
+    CallExpression *expr = new CallExpression(name, args);
+    expr->line_no = line;
+    expr->column_no = col;
+    return expr;
 }
 
 // ============================================================================
@@ -2295,11 +2352,11 @@ CallExpression *create_call_expression(const std::string &name, const std::vecto
 void MethodCallExpression::generate_tac()
 {
     code.clear();
-    
+
     // 1. Generate TAC for object expression to get its address/value
     object->generate_tac();
     code.insert(code.end(), object->code.begin(), object->code.end());
-    
+
     // 2. Determine the class type of the object
     if (!object->type)
     {
@@ -2308,14 +2365,14 @@ void MethodCallExpression::generate_tac()
         type = new Type(TYPE_ERROR);
         return;
     }
-    
+
     if (object->type->is_error())
     {
         // Error already reported, propagate error type
         type = new Type(TYPE_ERROR);
         return;
     }
-    
+
     if (!object->type->is_class)
     {
         SEM_ERROR(line_no, "Cannot call method '%s' on non-class type '%s'",
@@ -2324,14 +2381,14 @@ void MethodCallExpression::generate_tac()
         type = new Type(TYPE_ERROR);
         return;
     }
-    
+
     std::string class_name = object->type->class_name;
-    
+
     // 3. Evaluate arguments and collect their types
     std::vector<Type> argTypes;
     argTypes.reserve(args.size());
     bool has_error_args = false;
-    
+
     for (auto *e : args)
     {
         e->generate_tac();
@@ -2348,14 +2405,14 @@ void MethodCallExpression::generate_tac()
             has_error_args = true;
         }
     }
-    
+
     // If any argument has an error, propagate error (don't try to match)
     if (has_error_args)
     {
         type = new Type(TYPE_ERROR);
         return;
     }
-    
+
     // 4. Find matching method using overload resolution
     MethodSignature *method = find_method_match(class_name, method_name, argTypes);
     if (!method)
@@ -2370,35 +2427,35 @@ void MethodCallExpression::generate_tac()
         }
         if (argTypes.empty())
             argTypeStr = "void";
-        
-    SEM_ERROR(line_no, "No matching method '%s::%s(%s)'",
-          class_name.c_str(), method_name.c_str(), argTypeStr.c_str());
+
+        SEM_ERROR(line_no, "No matching method '%s::%s(%s)'",
+                  class_name.c_str(), method_name.c_str(), argTypeStr.c_str());
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         return;
     }
-    
+
     // 5. Type checking passed - emit TAC
-    
+
     // First parameter is address of object (this pointer)
     TACOperand object_addr = tacGen.newTemp();
     tacGen.emit(TAC_ADDR_OF, object_addr, *object->result, TACOperand());
     code.push_back(tacGen.getCode().back());
-    
+
     tacGen.emit(TAC_PARAM, TACOperand(), object_addr);
     code.push_back(tacGen.getCode().back());
-    
+
     // Emit parameters for user arguments
     for (auto *e : args)
     {
         tacGen.emit(TAC_PARAM, TACOperand(), *e->result);
         code.push_back(tacGen.getCode().back());
     }
-    
+
     // Emit call to mangled method name
     TACOperand methodOp(TACOperand::OPERAND_LABEL, method->mangled_name);
     TACOperand nParams(TACOperand::OPERAND_CONSTANT, std::to_string(args.size() + 1)); // +1 for 'this'
-    
+
     // Set return type and emit call
     if (method->returnType.base_type != TYPE_VOID)
     {
@@ -2415,27 +2472,33 @@ void MethodCallExpression::generate_tac()
         code.push_back(tacGen.getCode().back());
         type = new Type(TYPE_VOID);
     }
-    
+
     if (debug)
     {
-        cout << "[AST] Method call: " << class_name << "::" << method_name 
+        cout << "[AST] Method call: " << class_name << "::" << method_name
              << " -> " << method->mangled_name << endl;
     }
 }
 
-MethodCallExpression *create_method_call_expression(Expression *object, const char *method_name, const std::vector<Expression *> *args)
+MethodCallExpression *create_method_call_expression(Expression *object, const char *method_name, const std::vector<Expression *> *args, int line, int col)
 {
     std::vector<Expression *> arg_vec;
     if (args)
     {
         arg_vec = *args;
     }
-    return new MethodCallExpression(object, std::string(method_name), arg_vec);
+    MethodCallExpression *expr = new MethodCallExpression(object, std::string(method_name), arg_vec);
+    expr->line_no = line;
+    expr->column_no = col;
+    return expr;
 }
 
-PostfixExpression *create_postfix_expression(TACOp op, Expression *expr)
+PostfixExpression *create_postfix_expression(TACOp op, Expression *expr, int line, int col)
 {
-    return new PostfixExpression(op, expr);
+    PostfixExpression *postfix = new PostfixExpression(op, expr);
+    postfix->line_no = line;
+    postfix->column_no = col;
+    return postfix;
 }
 
 // ============================================================================
@@ -2510,10 +2573,10 @@ void MemberAccessExpression::generate_tac()
         // Check access permissions
         AccessLevel member_access = ct->get_member_access(member_name);
         bool inside_same_class = (current_class && current_class->name == ct->name);
-        
+
         if (member_access != ACCESS_PUBLIC && !inside_same_class)
         {
-            const char* access_str = (member_access == ACCESS_PRIVATE) ? "private" : "protected";
+            const char *access_str = (member_access == ACCESS_PRIVATE) ? "private" : "protected";
             SEM_ERROR(line_no, "Cannot access %s member '%s' of class '%s'",
                       access_str, member_name.c_str(), ct->name.c_str());
             semantic_error_count++;
@@ -2691,10 +2754,10 @@ void MemberAccessPtrExpression::generate_tac()
         // Check access permissions
         AccessLevel member_access = ct->get_member_access(member_name);
         bool inside_same_class = (current_class && current_class->name == ct->name);
-        
+
         if (member_access != ACCESS_PUBLIC && !inside_same_class)
         {
-            const char* access_str = (member_access == ACCESS_PRIVATE) ? "private" : "protected";
+            const char *access_str = (member_access == ACCESS_PRIVATE) ? "private" : "protected";
             SEM_ERROR(line_no, "Cannot access %s member '%s' of class '%s'",
                       access_str, member_name.c_str(), ct->name.c_str());
             semantic_error_count++;
@@ -2783,12 +2846,18 @@ void MemberAccessPtrExpression::generate_tac()
 }
 
 // Helper functions for creating member access expressions
-MemberAccessExpression *create_member_access_expression(Expression *struct_expr, const std::string &member)
+MemberAccessExpression *create_member_access_expression(Expression *struct_expr, const std::string &member, int line, int col)
 {
-    return new MemberAccessExpression(struct_expr, member);
+    MemberAccessExpression *expr = new MemberAccessExpression(struct_expr, member);
+    expr->line_no = line;
+    expr->column_no = col;
+    return expr;
 }
 
-MemberAccessPtrExpression *create_member_access_ptr_expression(Expression *ptr_expr, const std::string &member)
+MemberAccessPtrExpression *create_member_access_ptr_expression(Expression *ptr_expr, const std::string &member, int line, int col)
 {
-    return new MemberAccessPtrExpression(ptr_expr, member);
+    MemberAccessPtrExpression *expr = new MemberAccessPtrExpression(ptr_expr, member);
+    expr->line_no = line;
+    expr->column_no = col;
+    return expr;
 }

@@ -12,10 +12,10 @@ extern int yylineno;
 
 namespace
 {
-int effective_line(int line)
-{
-    return line > 0 ? line : yylineno;
-}
+    int effective_line(int line)
+    {
+        return line > 0 ? line : yylineno;
+    }
 }
 
 #define SEM_ERROR(line, ...) report_semantic_error(effective_line(line), __VA_ARGS__)
@@ -35,13 +35,13 @@ extern Type current_function_return_type;
 // ============================================================================
 // Active compound scope stack for destructor tracking during codegen
 // ============================================================================
-static std::vector<CompoundStatement*> active_compound_stack;
+static std::vector<CompoundStatement *> active_compound_stack;
 
 // Forward decl for helper used in return/scope-exit to emit destructor calls
-static void emit_destructor_for_symbol(Symbol* sym, std::vector<TACInstruction*>& out);
+static void emit_destructor_for_symbol(Symbol *sym, std::vector<TACInstruction *> &out);
 
 // Registration API used by declaration codegen when a class object is constructed
-void register_constructed_local(Symbol* sym)
+void register_constructed_local(Symbol *sym)
 {
     if (!active_compound_stack.empty() && sym)
     {
@@ -142,7 +142,7 @@ void IfStatement::generate_tac()
     // STEP 1: Generate code for condition
     condition->generate_tac();
     code = condition->code;
-    
+
     // TYPE CHECK: Ensure condition is bool-compatible
     if (condition->type && !is_bool_compatible(*condition->type))
     {
@@ -279,7 +279,7 @@ void WhileStatement::generate_tac()
     // Generate code for condition
     condition->generate_tac();
     code = condition->code;
-    
+
     // TYPE CHECK: Ensure condition is bool-compatible
     if (condition->type && !is_bool_compatible(*condition->type))
     {
@@ -390,7 +390,7 @@ void DoWhileStatement::generate_tac()
     // Generate code for condition
     condition->generate_tac();
     code.insert(code.end(), condition->code.begin(), condition->code.end());
-    
+
     // TYPE CHECK: Ensure condition is bool-compatible
     if (condition->type && !is_bool_compatible(*condition->type))
     {
@@ -582,7 +582,7 @@ void ForStatement::generate_tac()
     {
         condition->generate_tac();
         code.insert(code.end(), condition->code.begin(), condition->code.end());
-        
+
         // TYPE CHECK: Ensure condition is bool-compatible
         if (condition->type && !is_bool_compatible(*condition->type))
         {
@@ -1013,20 +1013,20 @@ void SwitchStatement::collect_labels(Statement *stmt)
     {
         // Found a case label - check for duplicates
         int case_value = extract_constant_value(case_label->case_value);
-        
+
         // Check if this case value already exists
         for (const auto &existing_case : case_labels)
         {
             int existing_value = extract_constant_value(existing_case.first);
             if (existing_value == case_value)
             {
-                SEM_ERROR(case_label->line_no, 
+                SEM_ERROR(case_label->line_no,
                           "Duplicate case value %d in switch statement", case_value);
                 semantic_error_count++;
                 return; // Don't add duplicate case
             }
         }
-        
+
         // Add new case label (position will be updated during generate_tac)
         case_labels.push_back({case_label->case_value, -1});
     }
@@ -1035,12 +1035,12 @@ void SwitchStatement::collect_labels(Statement *stmt)
         // Found default label - check if we already have one
         if (default_label != -2) // -2 means no default found yet
         {
-            SEM_ERROR(default_label_stmt->line_no, 
+            SEM_ERROR(default_label_stmt->line_no,
                       "Multiple default labels in switch statement");
             semantic_error_count++;
             return; // Don't add duplicate default
         }
-        
+
         default_label = -1; // Mark as found, position will be updated during generate_tac
     }
     else if (CompoundStatement *compound = dynamic_cast<CompoundStatement *>(stmt))
@@ -1467,69 +1467,108 @@ void SwitchStatement::generate_tac()
 // Helper Functions - Statement Creation
 // ============================================================================
 
-IfStatement *create_if_statement(Expression *cond, Statement *then_stmt, Statement *else_stmt)
+IfStatement *create_if_statement(Expression *cond, Statement *then_stmt, Statement *else_stmt, int line, int col)
 {
-    return new IfStatement(cond, then_stmt, else_stmt);
+    IfStatement *stmt = new IfStatement(cond, then_stmt, else_stmt);
+    stmt->line_no = line;
+    stmt->column_no = col;
+    return stmt;
 }
 
-WhileStatement *create_while_statement(Expression *cond, Statement *body)
+WhileStatement *create_while_statement(Expression *cond, Statement *body, int line, int col)
 {
-    return new WhileStatement(cond, body);
+    WhileStatement *stmt = new WhileStatement(cond, body);
+    stmt->line_no = line;
+    stmt->column_no = col;
+    return stmt;
 }
 
-DoWhileStatement *create_dowhile_statement(Statement *body, Expression *cond)
+DoWhileStatement *create_dowhile_statement(Statement *body, Expression *cond, int line, int col)
 {
-    return new DoWhileStatement(body, cond);
+    DoWhileStatement *stmt = new DoWhileStatement(body, cond);
+    stmt->line_no = line;
+    stmt->column_no = col;
+    return stmt;
 }
 
-UntilStatement *create_until_statement(Expression *cond, Statement *body)
+UntilStatement *create_until_statement(Expression *cond, Statement *body, int line, int col)
 {
-    return new UntilStatement(cond, body);
+    UntilStatement *stmt = new UntilStatement(cond, body);
+    stmt->line_no = line;
+    stmt->column_no = col;
+    return stmt;
 }
 
-ForStatement *create_for_statement(Statement *init, Expression *cond, Expression *post, Statement *body)
+ForStatement *create_for_statement(Statement *init, Expression *cond, Expression *post, Statement *body, int line, int col)
 {
-    return new ForStatement(init, cond, post, body);
+    ForStatement *stmt = new ForStatement(init, cond, post, body);
+    stmt->line_no = line;
+    stmt->column_no = col;
+    return stmt;
 }
 
-BreakStatement *create_break_statement()
+BreakStatement *create_break_statement(int line, int col)
 {
-    return new BreakStatement();
+    BreakStatement *stmt = new BreakStatement();
+    stmt->line_no = line;
+    stmt->column_no = col;
+    return stmt;
 }
 
-ContinueStatement *create_continue_statement()
+ContinueStatement *create_continue_statement(int line, int col)
 {
-    return new ContinueStatement();
+    ContinueStatement *stmt = new ContinueStatement();
+    stmt->line_no = line;
+    stmt->column_no = col;
+    return stmt;
 }
 
-DeclarationStatement *create_declaration_statement(Declaration *decl)
+DeclarationStatement *create_declaration_statement(Declaration *decl, int line, int col)
 {
-    return new DeclarationStatement(decl);
+    DeclarationStatement *stmt = new DeclarationStatement(decl);
+    stmt->line_no = line;
+    stmt->column_no = col;
+    return stmt;
 }
 
-ExpressionStatement *create_expression_statement(Expression *expr)
+ExpressionStatement *create_expression_statement(Expression *expr, int line, int col)
 {
-    return new ExpressionStatement(expr);
+    ExpressionStatement *stmt = new ExpressionStatement(expr);
+    stmt->line_no = line;
+    stmt->column_no = col;
+    return stmt;
 }
 
-CompoundStatement *create_compound_statement()
+CompoundStatement *create_compound_statement(int line, int col)
 {
-    return new CompoundStatement();
+    CompoundStatement *stmt = new CompoundStatement();
+    stmt->line_no = line;
+    stmt->column_no = col;
+    return stmt;
 }
 
-CaseLabel *create_case_label(Expression *value, Statement *stmt)
+CaseLabel *create_case_label(Expression *value, Statement *stmt, int line, int col)
 {
-    return new CaseLabel(value, stmt);
+    CaseLabel *label = new CaseLabel(value, stmt);
+    label->line_no = line;
+    label->column_no = col;
+    return label;
 }
 
-DefaultLabel *create_default_label(Statement *stmt)
+DefaultLabel *create_default_label(Statement *stmt, int line, int col)
 {
-    return new DefaultLabel(stmt);
+    DefaultLabel *label = new DefaultLabel(stmt);
+    label->line_no = line;
+    label->column_no = col;
+    return label;
 }
 
-SwitchStatement *create_switch_statement(Expression *expr, Statement *body)
+SwitchStatement *create_switch_statement(Expression *expr, Statement *body, int line, int col)
 {
-    return new SwitchStatement(expr, body);
+    SwitchStatement *stmt = new SwitchStatement(expr, body);
+    stmt->line_no = line;
+    stmt->column_no = col;
+    return stmt;
 }
 
 // ============================================================================
@@ -1594,7 +1633,7 @@ void ReturnStatement::generate_tac()
         {
             for (auto scope_it = active_compound_stack.rbegin(); scope_it != active_compound_stack.rend(); ++scope_it)
             {
-                CompoundStatement* scope = *scope_it;
+                CompoundStatement *scope = *scope_it;
                 for (auto sym_it = scope->constructed_locals.rbegin(); sym_it != scope->constructed_locals.rend(); ++sym_it)
                 {
                     emit_destructor_for_symbol(*sym_it, code);
@@ -1647,7 +1686,7 @@ void ReturnStatement::generate_tac()
         {
             for (auto scope_it = active_compound_stack.rbegin(); scope_it != active_compound_stack.rend(); ++scope_it)
             {
-                CompoundStatement* scope = *scope_it;
+                CompoundStatement *scope = *scope_it;
                 for (auto sym_it = scope->constructed_locals.rbegin(); sym_it != scope->constructed_locals.rend(); ++sym_it)
                 {
                     emit_destructor_for_symbol(*sym_it, code);
@@ -1662,9 +1701,12 @@ void ReturnStatement::generate_tac()
         printf("[AST] ReturnStatement: Generated TAC for return statement\n");
 }
 
-ReturnStatement *create_return_statement(Expression *expr)
+ReturnStatement *create_return_statement(Expression *expr, int line, int col)
 {
-    return new ReturnStatement(expr);
+    ReturnStatement *stmt = new ReturnStatement(expr);
+    stmt->line_no = line;
+    stmt->column_no = col;
+    return stmt;
 }
 
 // ============================================================================
@@ -1753,20 +1795,26 @@ void LabelStatement::generate_tac()
 // Helper Functions for Goto and Label Statements
 // ============================================================================
 
-GotoStatement *create_goto_statement(const std::string &label)
+GotoStatement *create_goto_statement(const std::string &label, int line, int col)
 {
-    return new GotoStatement(label);
+    GotoStatement *stmt = new GotoStatement(label);
+    stmt->line_no = line;
+    stmt->column_no = col;
+    return stmt;
 }
 
-LabelStatement *create_label_statement(const std::string &label, Statement *stmt)
+LabelStatement *create_label_statement(const std::string &label, Statement *stmt, int line, int col)
 {
-    return new LabelStatement(label, stmt);
+    LabelStatement *label_stmt = new LabelStatement(label, stmt);
+    label_stmt->line_no = line;
+    label_stmt->column_no = col;
+    return label_stmt;
 }
 
 // ============================================================================
 // Helper: emit destructor call for a constructed class object symbol
 // ============================================================================
-static void emit_destructor_for_symbol(Symbol* sym, std::vector<TACInstruction*>& out)
+static void emit_destructor_for_symbol(Symbol *sym, std::vector<TACInstruction *> &out)
 {
     if (!sym)
         return;
@@ -1775,10 +1823,10 @@ static void emit_destructor_for_symbol(Symbol* sym, std::vector<TACInstruction*>
     if (!sym->type.is_class || sym->type.pointer_level > 0)
         return;
 
-    const std::string& class_name = sym->type.class_name;
+    const std::string &class_name = sym->type.class_name;
     // Check if destructor exists: ~ClassName with no parameters
     std::vector<Type> no_params;
-    MethodSignature* dtor = find_method_match(class_name, "~" + class_name, no_params);
+    MethodSignature *dtor = find_method_match(class_name, "~" + class_name, no_params);
     if (!dtor)
     {
         // No user-declared destructor; skip silently
@@ -1786,11 +1834,11 @@ static void emit_destructor_for_symbol(Symbol* sym, std::vector<TACInstruction*>
     }
 
     // Build object expression referring to the exact symbol (ensure correct mangling)
-    PrimaryExpression* obj = create_primary_expression(sym->name);
+    PrimaryExpression *obj = create_primary_expression(sym->name);
     obj->symbol_ref = sym; // force correct symbol for mangling
 
-    std::vector<Expression*> empty_args;
-    MethodCallExpression* call = create_method_call_expression(obj, ("~" + class_name).c_str(), &empty_args);
+    std::vector<Expression *> empty_args;
+    MethodCallExpression *call = create_method_call_expression(obj, ("~" + class_name).c_str(), &empty_args);
     call->generate_tac();
     // Append generated TAC
     out.insert(out.end(), call->code.begin(), call->code.end());

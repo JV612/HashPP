@@ -211,12 +211,12 @@ primary_expression
         }
 	| STRING_LITERAL
         {
-            $$ = create_string_literal_expression($1);
+            $$ = create_string_literal_expression($1, @1.first_line, @1.first_column);
             free($1);
         }
 	| '(' expression ')'
         { 
-            $$ = create_paren_expression($2);
+            $$ = create_paren_expression($2, @1.first_line, @1.first_column);
         }
 	;
 
@@ -235,19 +235,19 @@ constant
         }
     | BOOL_TRUE
         { 
-            $$ = create_bool_constant_expression(true);
+            $$ = create_bool_constant_expression(true, @1.first_line, @1.first_column);
         }
     | BOOL_FALSE
         { 
-            $$ = create_bool_constant_expression(false);
+            $$ = create_bool_constant_expression(false, @1.first_line, @1.first_column);
         }
     | NULL_CONSTANT
         { 
-            $$ = create_null_constant_expression();
+            $$ = create_null_constant_expression(@1.first_line, @1.first_column);
         }
     | NULLPTR_CONSTANT
         { 
-            $$ = create_null_constant_expression();
+            $$ = create_null_constant_expression(@1.first_line, @1.first_column);
         }
     ;
 
@@ -257,7 +257,7 @@ postfix_expression
         { $$ = $1; }
 	| postfix_expression '[' expression ']'
         {
-            $$ = create_array_access_expression($1, $3);
+            $$ = create_array_access_expression($1, $3, @2.first_line, @2.first_column);
         }
 	| postfix_expression '(' ')'
         {
@@ -265,7 +265,7 @@ postfix_expression
             PrimaryExpression* id = dynamic_cast<PrimaryExpression*>($1);
             std::vector<Expression*> empty;
             if (id && id->prim_type == PrimaryExpression::PRIM_IDENTIFIER) {
-                $$ = create_call_expression(id->name, empty);
+                $$ = create_call_expression(id->name, empty, @2.first_line, @2.first_column);
             } else {
                 $$ = $1; // fallback
             }
@@ -275,39 +275,39 @@ postfix_expression
             // Function call with args
             PrimaryExpression* id = dynamic_cast<PrimaryExpression*>($1);
             if (id && id->prim_type == PrimaryExpression::PRIM_IDENTIFIER) {
-                $$ = create_call_expression(id->name, *$3);
+                $$ = create_call_expression(id->name, *$3, @2.first_line, @2.first_column);
                 delete $3;
             } else {
                 $$ = $1; // fallback
             }
         }
 	| postfix_expression '.' IDENTIFIER {
-          $$ = create_member_access_expression($1, $3);
+          $$ = create_member_access_expression($1, $3, @2.first_line, @2.first_column);
           free($3);
       }
 	| postfix_expression '.' IDENTIFIER '(' ')' {
           // Method call with no arguments: object.method()
           std::vector<Expression*> empty_args;
-          $$ = create_method_call_expression($1, $3, &empty_args);
+          $$ = create_method_call_expression($1, $3, &empty_args, @2.first_line, @2.first_column);
           free($3);
       }
 	| postfix_expression '.' IDENTIFIER '(' argument_expression_list ')' {
           // Method call with arguments: object.method(arg1, arg2, ...)
-          $$ = create_method_call_expression($1, $3, $5);
+          $$ = create_method_call_expression($1, $3, $5, @2.first_line, @2.first_column);
           delete $5;  // argument list managed by MethodCallExpression
           free($3);
       }
 	| postfix_expression PTR_OP IDENTIFIER {
-          $$ = create_member_access_ptr_expression($1, $3);
+          $$ = create_member_access_ptr_expression($1, $3, @2.first_line, @2.first_column);
           free($3);
       }
 	| postfix_expression INC_OP
         {
-            $$ = create_postfix_expression(TAC_POST_INC, $1);
+            $$ = create_postfix_expression(TAC_POST_INC, $1, @2.first_line, @2.first_column);
         }
 	| postfix_expression DEC_OP
         {
-            $$ = create_postfix_expression(TAC_POST_DEC, $1);
+            $$ = create_postfix_expression(TAC_POST_DEC, $1, @2.first_line, @2.first_column);
         }
 	;
 
@@ -328,21 +328,21 @@ unary_expression
     : postfix_expression
         { $$ = $1; }
 | INC_OP unary_expression
-        { $$ = create_unary_expression(TAC_PRE_INC, $2); }
+        { $$ = create_unary_expression(TAC_PRE_INC, $2, @1.first_line, @1.first_column); }
 | DEC_OP unary_expression
-        { $$ = create_unary_expression(TAC_PRE_DEC, $2); }
+        { $$ = create_unary_expression(TAC_PRE_DEC, $2, @1.first_line, @1.first_column); }
 | '&' cast_expression
-        { $$ = create_unary_expression(TAC_ADDR_OF, $2); }
+        { $$ = create_unary_expression(TAC_ADDR_OF, $2, @1.first_line, @1.first_column); }
 | '*' cast_expression
-        { $$ = create_unary_expression(TAC_DEREF, $2); }
+        { $$ = create_unary_expression(TAC_DEREF, $2, @1.first_line, @1.first_column); }
 | '+' cast_expression
-        { $$ = create_unary_expression(TAC_UPLUS, $2); }
+        { $$ = create_unary_expression(TAC_UPLUS, $2, @1.first_line, @1.first_column); }
 | '-' cast_expression %prec UMINUS
-        { $$ = create_unary_expression(TAC_UMINUS, $2); }
+        { $$ = create_unary_expression(TAC_UMINUS, $2, @1.first_line, @1.first_column); }
 | '~' cast_expression
-        { $$ = create_unary_expression(TAC_BITWISE_NOT, $2); }
+        { $$ = create_unary_expression(TAC_BITWISE_NOT, $2, @1.first_line, @1.first_column); }
 | '!' cast_expression
-        { $$ = create_unary_expression(TAC_LOGICAL_NOT, $2); }
+        { $$ = create_unary_expression(TAC_LOGICAL_NOT, $2, @1.first_line, @1.first_column); }
 | SIZEOF unary_expression
 | SIZEOF '(' type_name ')'
     ;
@@ -358,12 +358,12 @@ multiplicative_expression
         { $$ = $1; }
 	| multiplicative_expression '*' cast_expression
         { 
-            $$ = create_binary_expression($1, TAC_MUL, $3);
+            $$ = create_binary_expression($1, TAC_MUL, $3, @2.first_line, @2.first_column);
         }
 	| multiplicative_expression '/' cast_expression
-        { $$ = create_binary_expression($1, TAC_DIV, $3); }
+        { $$ = create_binary_expression($1, TAC_DIV, $3, @2.first_line, @2.first_column); }
 	| multiplicative_expression '%' cast_expression
-        { $$ = create_binary_expression($1, TAC_MOD, $3); }
+        { $$ = create_binary_expression($1, TAC_MOD, $3, @2.first_line, @2.first_column); }
 	;
 
 additive_expression
@@ -371,76 +371,76 @@ additive_expression
         { $$ = $1; }
 	| additive_expression '+' multiplicative_expression
         { 
-            $$ = create_binary_expression($1, TAC_ADD, $3);
+            $$ = create_binary_expression($1, TAC_ADD, $3, @2.first_line, @2.first_column);
         }
 	| additive_expression '-' multiplicative_expression
-        { $$ = create_binary_expression($1, TAC_SUB, $3); }
+        { $$ = create_binary_expression($1, TAC_SUB, $3, @2.first_line, @2.first_column); }
 	;
 
 shift_expression
 	: additive_expression
         { $$ = $1; }
 	| shift_expression LEFT_OP additive_expression
-        { $$ = create_binary_expression($1, TAC_LEFT_SHIFT, $3); }
+        { $$ = create_binary_expression($1, TAC_LEFT_SHIFT, $3, @2.first_line, @2.first_column); }
 	| shift_expression RIGHT_OP additive_expression
-        { $$ = create_binary_expression($1, TAC_RIGHT_SHIFT, $3); }
+        { $$ = create_binary_expression($1, TAC_RIGHT_SHIFT, $3, @2.first_line, @2.first_column); }
 	;
 
 relational_expression
 	: shift_expression
         { $$ = $1; }
 	| relational_expression '<' shift_expression
-        { $$ = create_binary_expression($1, TAC_LT, $3); }
+        { $$ = create_binary_expression($1, TAC_LT, $3, @2.first_line, @2.first_column); }
 	| relational_expression '>' shift_expression
-        { $$ = create_binary_expression($1, TAC_GT, $3); }
+        { $$ = create_binary_expression($1, TAC_GT, $3, @2.first_line, @2.first_column); }
 	| relational_expression LE_OP shift_expression
-        { $$ = create_binary_expression($1, TAC_LE, $3); }
+        { $$ = create_binary_expression($1, TAC_LE, $3, @2.first_line, @2.first_column); }
 	| relational_expression GE_OP shift_expression
-        { $$ = create_binary_expression($1, TAC_GE, $3); }
+        { $$ = create_binary_expression($1, TAC_GE, $3, @2.first_line, @2.first_column); }
 	;
 
 equality_expression
 	: relational_expression
         { $$ = $1; }
 	| equality_expression EQ_OP relational_expression
-        { $$ = create_binary_expression($1, TAC_EQ, $3); }
+        { $$ = create_binary_expression($1, TAC_EQ, $3, @2.first_line, @2.first_column); }
 	| equality_expression NE_OP relational_expression
-        { $$ = create_binary_expression($1, TAC_NE, $3); }
+        { $$ = create_binary_expression($1, TAC_NE, $3, @2.first_line, @2.first_column); }
 	;
 
 and_expression
 	: equality_expression
         { $$ = $1; }
 	| and_expression '&' equality_expression
-        { $$ = create_binary_expression($1, TAC_BITWISE_AND, $3); }
+        { $$ = create_binary_expression($1, TAC_BITWISE_AND, $3, @2.first_line, @2.first_column); }
 	;
 
 exclusive_or_expression
 	: and_expression
         { $$ = $1; }
 	| exclusive_or_expression '^' and_expression
-        { $$ = create_binary_expression($1, TAC_BITWISE_XOR, $3); }
+        { $$ = create_binary_expression($1, TAC_BITWISE_XOR, $3, @2.first_line, @2.first_column); }
 	;
 
 inclusive_or_expression
 	: exclusive_or_expression
         { $$ = $1; }
 	| inclusive_or_expression '|' exclusive_or_expression
-        { $$ = create_binary_expression($1, TAC_BITWISE_OR, $3); }
+        { $$ = create_binary_expression($1, TAC_BITWISE_OR, $3, @2.first_line, @2.first_column); }
 	;
 
 logical_and_expression
 	: inclusive_or_expression
         { $$ = $1; }
 	| logical_and_expression AND_OP inclusive_or_expression
-        { $$ = create_binary_expression($1, TAC_LOGICAL_AND, $3); }
+        { $$ = create_binary_expression($1, TAC_LOGICAL_AND, $3, @2.first_line, @2.first_column); }
 	;
 
 logical_or_expression
 	: logical_and_expression
         { $$ = $1; }
 	| logical_or_expression OR_OP logical_and_expression
-        { $$ = create_binary_expression($1, TAC_LOGICAL_OR, $3); }
+        { $$ = create_binary_expression($1, TAC_LOGICAL_OR, $3, @2.first_line, @2.first_column); }
 	;
 
 conditional_expression
@@ -454,139 +454,139 @@ assignment_expression
         { $$ = $1; }
     | IDENTIFIER '=' assignment_expression
         {
-            $$ = create_assignment_expression($1, $3);
+            $$ = create_assignment_expression($1, $3, @2.first_line, @2.first_column);
         }
     | unary_expression '=' assignment_expression
         {
             // General assignment (LHS can be *ptr, arr[i], etc.)
-            $$ = create_general_assignment_expression($1, $3);
+            $$ = create_general_assignment_expression($1, $3, @2.first_line, @2.first_column);
         }
     | IDENTIFIER ADD_ASSIGN assignment_expression
         {
             // a += b becomes a = a + b
             Expression* lhs = create_primary_expression($1);
-            Expression* rhs = create_binary_expression(lhs, TAC_ADD, $3);
-            $$ = create_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression(lhs, TAC_ADD, $3, @2.first_line, @2.first_column);
+            $$ = create_assignment_expression($1, rhs, @2.first_line, @2.first_column);
             free($1);
         }
     | unary_expression ADD_ASSIGN assignment_expression
         {
             // Handle compound assignments for complex lvalues like ptr->member += value
-            Expression* rhs = create_binary_expression($1, TAC_ADD, $3);
-            $$ = create_general_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression($1, TAC_ADD, $3, @2.first_line, @2.first_column);
+            $$ = create_general_assignment_expression($1, rhs, @2.first_line, @2.first_column);
         }
     | IDENTIFIER SUB_ASSIGN assignment_expression
         {
             Expression* lhs = create_primary_expression($1);
-            Expression* rhs = create_binary_expression(lhs, TAC_SUB, $3);
-            $$ = create_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression(lhs, TAC_SUB, $3, @2.first_line, @2.first_column);
+            $$ = create_assignment_expression($1, rhs, @2.first_line, @2.first_column);
             free($1);
         }
     | unary_expression SUB_ASSIGN assignment_expression
         {
-            Expression* rhs = create_binary_expression($1, TAC_SUB, $3);
-            $$ = create_general_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression($1, TAC_SUB, $3, @2.first_line, @2.first_column);
+            $$ = create_general_assignment_expression($1, rhs, @2.first_line, @2.first_column);
         }
     | IDENTIFIER MUL_ASSIGN assignment_expression
         {
             Expression* lhs = create_primary_expression($1);
-            Expression* rhs = create_binary_expression(lhs, TAC_MUL, $3);
-            $$ = create_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression(lhs, TAC_MUL, $3, @2.first_line, @2.first_column);
+            $$ = create_assignment_expression($1, rhs, @2.first_line, @2.first_column);
             free($1);
         }
     | unary_expression MUL_ASSIGN assignment_expression
         {
-            Expression* rhs = create_binary_expression($1, TAC_MUL, $3);
-            $$ = create_general_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression($1, TAC_MUL, $3, @2.first_line, @2.first_column);
+            $$ = create_general_assignment_expression($1, rhs, @2.first_line, @2.first_column);
         }
     | IDENTIFIER DIV_ASSIGN assignment_expression
         {
             Expression* lhs = create_primary_expression($1);
-            Expression* rhs = create_binary_expression(lhs, TAC_DIV, $3);
-            $$ = create_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression(lhs, TAC_DIV, $3, @2.first_line, @2.first_column);
+            $$ = create_assignment_expression($1, rhs, @2.first_line, @2.first_column);
             free($1);
         }
     | unary_expression DIV_ASSIGN assignment_expression
         {
-            Expression* rhs = create_binary_expression($1, TAC_DIV, $3);
-            $$ = create_general_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression($1, TAC_DIV, $3, @2.first_line, @2.first_column);
+            $$ = create_general_assignment_expression($1, rhs, @2.first_line, @2.first_column);
         }
     | IDENTIFIER MOD_ASSIGN assignment_expression
         {
             Expression* lhs = create_primary_expression($1);
-            Expression* rhs = create_binary_expression(lhs, TAC_MOD, $3);
-            $$ = create_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression(lhs, TAC_MOD, $3, @2.first_line, @2.first_column);
+            $$ = create_assignment_expression($1, rhs, @2.first_line, @2.first_column);
             free($1);
         }
     | unary_expression MOD_ASSIGN assignment_expression
         {
-            Expression* rhs = create_binary_expression($1, TAC_MOD, $3);
-            $$ = create_general_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression($1, TAC_MOD, $3, @2.first_line, @2.first_column);
+            $$ = create_general_assignment_expression($1, rhs, @2.first_line, @2.first_column);
         }
     | IDENTIFIER XOR_ASSIGN assignment_expression
         {
             // a ^= b becomes a = a ^ b
             Expression* lhs = create_primary_expression($1);
-            Expression* rhs = create_binary_expression(lhs, TAC_BITWISE_XOR, $3);
-            $$ = create_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression(lhs, TAC_BITWISE_XOR, $3, @2.first_line, @2.first_column);
+            $$ = create_assignment_expression($1, rhs, @2.first_line, @2.first_column);
             free($1);
         }
     | unary_expression XOR_ASSIGN assignment_expression
         {
-            Expression* rhs = create_binary_expression($1, TAC_BITWISE_XOR, $3);
-            $$ = create_general_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression($1, TAC_BITWISE_XOR, $3, @2.first_line, @2.first_column);
+            $$ = create_general_assignment_expression($1, rhs, @2.first_line, @2.first_column);
         }
     | IDENTIFIER OR_ASSIGN assignment_expression
         {
             // a |= b becomes a = a | b
             Expression* lhs = create_primary_expression($1);
-            Expression* rhs = create_binary_expression(lhs, TAC_BITWISE_OR, $3);
-            $$ = create_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression(lhs, TAC_BITWISE_OR, $3, @2.first_line, @2.first_column);
+            $$ = create_assignment_expression($1, rhs, @2.first_line, @2.first_column);
             free($1);
         }
     | unary_expression OR_ASSIGN assignment_expression
         {
-            Expression* rhs = create_binary_expression($1, TAC_BITWISE_OR, $3);
-            $$ = create_general_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression($1, TAC_BITWISE_OR, $3, @2.first_line, @2.first_column);
+            $$ = create_general_assignment_expression($1, rhs, @2.first_line, @2.first_column);
         }
     | IDENTIFIER AND_ASSIGN assignment_expression
         {
             // a &= b becomes a = a & b
             Expression* lhs = create_primary_expression($1);
-            Expression* rhs = create_binary_expression(lhs, TAC_BITWISE_AND, $3);
-            $$ = create_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression(lhs, TAC_BITWISE_AND, $3, @2.first_line, @2.first_column);
+            $$ = create_assignment_expression($1, rhs, @2.first_line, @2.first_column);
             free($1);
         }
     | unary_expression AND_ASSIGN assignment_expression
         {
-            Expression* rhs = create_binary_expression($1, TAC_BITWISE_AND, $3);
-            $$ = create_general_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression($1, TAC_BITWISE_AND, $3, @2.first_line, @2.first_column);
+            $$ = create_general_assignment_expression($1, rhs, @2.first_line, @2.first_column);
         }
     | IDENTIFIER LEFT_ASSIGN assignment_expression
         {
             // a <<= b becomes a = a << b
             Expression* lhs = create_primary_expression($1);
-            Expression* rhs = create_binary_expression(lhs, TAC_LEFT_SHIFT, $3);
-            $$ = create_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression(lhs, TAC_LEFT_SHIFT, $3, @2.first_line, @2.first_column);
+            $$ = create_assignment_expression($1, rhs, @2.first_line, @2.first_column);
             free($1);
         }
     | unary_expression LEFT_ASSIGN assignment_expression
         {
-            Expression* rhs = create_binary_expression($1, TAC_LEFT_SHIFT, $3);
-            $$ = create_general_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression($1, TAC_LEFT_SHIFT, $3, @2.first_line, @2.first_column);
+            $$ = create_general_assignment_expression($1, rhs, @2.first_line, @2.first_column);
         }
     | IDENTIFIER RIGHT_ASSIGN assignment_expression
         {
             // a >>= b becomes a = a >> b
             Expression* lhs = create_primary_expression($1);
-            Expression* rhs = create_binary_expression(lhs, TAC_RIGHT_SHIFT, $3);
-            $$ = create_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression(lhs, TAC_RIGHT_SHIFT, $3, @2.first_line, @2.first_column);
+            $$ = create_assignment_expression($1, rhs, @2.first_line, @2.first_column);
             free($1);
         }
     | unary_expression RIGHT_ASSIGN assignment_expression
         {
-            Expression* rhs = create_binary_expression($1, TAC_RIGHT_SHIFT, $3);
-            $$ = create_general_assignment_expression($1, rhs);
+            Expression* rhs = create_binary_expression($1, TAC_RIGHT_SHIFT, $3, @2.first_line, @2.first_column);
+            $$ = create_general_assignment_expression($1, rhs, @2.first_line, @2.first_column);
         }
     ;
 
@@ -762,7 +762,7 @@ class_ctor_declarator
 
               // Create a method call expression: obj.ClassName()
               std::vector<Expression*> no_args;
-              Expression* ctor_call = create_method_call_expression(obj, current_type.class_name.c_str(), &no_args);
+              Expression* ctor_call = create_method_call_expression(obj, current_type.class_name.c_str(), &no_args, @2.first_line, @2.first_column);
 
               // Attach initializer
               decl->initializer = ctor_call;
@@ -794,7 +794,7 @@ class_ctor_declarator
               Expression* obj = create_primary_expression(std::string($1));
 
               // Create a method call expression: obj.ClassName(args...)
-              Expression* ctor_call = create_method_call_expression(obj, current_type.class_name.c_str(), $3);
+              Expression* ctor_call = create_method_call_expression(obj, current_type.class_name.c_str(), $3, @2.first_line, @2.first_column);
 
               // Attach initializer
               decl->initializer = ctor_call;
@@ -2182,9 +2182,9 @@ initializer
 	: assignment_expression
         { $$ = $1; }
 	| '{' initializer_list '}'
-        { $$ = create_array_initializer_expression(*$2); delete $2; }
+        { $$ = create_array_initializer_expression(*$2, @1.first_line, @1.first_column); delete $2; }
 	| '{' initializer_list ',' '}'
-        { $$ = create_array_initializer_expression(*$2); delete $2; }
+        { $$ = create_array_initializer_expression(*$2, @1.first_line, @1.first_column); delete $2; }
 	;
 
 initializer_list
@@ -2225,7 +2225,7 @@ statement
                     $1->insert_symbol();
                 }
                 /* Wrap in DeclarationStatement for deferred TAC generation */
-                $$ = create_declaration_statement($1);
+                $$ = create_declaration_statement($1, @1.first_line, @1.first_column);
             } else {
                 $$ = nullptr;
             }
@@ -2234,11 +2234,11 @@ statement
 
 labeled_statement
     : IDENTIFIER ':' statement
-        { $$ = create_label_statement(std::string($1), $3); }
+        { $$ = create_label_statement(std::string($1), $3, @1.first_line, @1.first_column); }
     | CASE constant_expression ':' statement
-        { $$ = create_case_label($2, $4); }
+        { $$ = create_case_label($2, $4, @1.first_line, @1.first_column); }
     | DEFAULT ':' statement
-        { $$ = create_default_label($3); }
+        { $$ = create_default_label($3, @1.first_line, @1.first_column); }
     ;
 
 
@@ -2260,7 +2260,7 @@ compound_statement
         { 
             /* Exit scope when closing brace - but keep symbols for TAC generation */
             pop_scope();
-            $$ = create_compound_statement(); 
+            $$ = create_compound_statement(@1.first_line, @1.first_column); 
         }
     | '{' 
         { 
@@ -2292,7 +2292,7 @@ declaration_list
 statement_list
 	: statement
         {
-            CompoundStatement* compound = create_compound_statement();
+            CompoundStatement* compound = create_compound_statement(@1.first_line, @1.first_column);
             if ($1) {
                 compound->add_statement($1);
             }
@@ -2310,27 +2310,27 @@ statement_list
 
 expression_statement
 	: ';'
-        { $$ = create_expression_statement(nullptr); }
+        { $$ = create_expression_statement(nullptr, @1.first_line, @1.first_column); }
 	| expression ';'
-        { $$ = create_expression_statement($1); }
+        { $$ = create_expression_statement($1, @2.first_line, @2.first_column); }
 	;
 
 selection_statement
     : IF '(' expression ')' statement %prec THEN
-        { $$ = create_if_statement($3, $5, nullptr); }
+        { $$ = create_if_statement($3, $5, nullptr, @1.first_line, @1.first_column); }
 	| IF '(' expression ')' statement ELSE statement
-        { $$ = create_if_statement($3, $5, $7); }
+        { $$ = create_if_statement($3, $5, $7, @1.first_line, @1.first_column); }
 	| SWITCH '(' expression ')' statement
-        { $$ = create_switch_statement($3, $5); }
+        { $$ = create_switch_statement($3, $5, @1.first_line, @1.first_column); }
     ;
 
 iteration_statement
 	: WHILE '(' expression ')' statement
-        { $$ = create_while_statement($3, $5); }
+        { $$ = create_while_statement($3, $5, @1.first_line, @1.first_column); }
 	| UNTIL '(' expression ')' statement
-        { $$ = create_until_statement($3, $5); }
+        { $$ = create_until_statement($3, $5, @1.first_line, @1.first_column); }
 	| DO statement WHILE '(' expression ')' ';'
-        { $$ = create_dowhile_statement($2, $5); }
+        { $$ = create_dowhile_statement($2, $5, @1.first_line, @1.first_column); }
 	| FOR '(' expression_statement expression_statement ')' statement
         { 
             // Extract expression from expression_statement for condition
@@ -2339,7 +2339,7 @@ iteration_statement
                 ExpressionStatement* expr_stmt = dynamic_cast<ExpressionStatement*>($4);
                 if (expr_stmt) cond = expr_stmt->expr;
             }
-            $$ = create_for_statement($3, cond, nullptr, $6); 
+            $$ = create_for_statement($3, cond, nullptr, $6, @1.first_line, @1.first_column); 
         }
 	| FOR '(' expression_statement expression_statement expression ')' statement
         { 
@@ -2348,47 +2348,47 @@ iteration_statement
                 ExpressionStatement* expr_stmt = dynamic_cast<ExpressionStatement*>($4);
                 if (expr_stmt) cond = expr_stmt->expr;
             }
-            $$ = create_for_statement($3, cond, $5, $7); 
+            $$ = create_for_statement($3, cond, $5, $7, @1.first_line, @1.first_column); 
         }
 	| FOR '(' declaration expression_statement ')' statement
         { 
             // Wrap declaration in DeclarationStatement
             // (symbol already inserted during declaration parsing for declarations with initializers)
-            Statement* init = $3 ? create_declaration_statement($3) : nullptr;
+            Statement* init = $3 ? create_declaration_statement($3, @3.first_line, @3.first_column) : nullptr;
             
             Expression* cond = nullptr;
             if ($4) {
                 ExpressionStatement* expr_stmt = dynamic_cast<ExpressionStatement*>($4);
                 if (expr_stmt) cond = expr_stmt->expr;
             }
-            $$ = create_for_statement(init, cond, nullptr, $6); 
+            $$ = create_for_statement(init, cond, nullptr, $6, @1.first_line, @1.first_column); 
         }
 	| FOR '(' declaration expression_statement expression ')' statement
         { 
             // Wrap declaration in DeclarationStatement
             // (symbol already inserted during declaration parsing for declarations with initializers)
-            Statement* init = $3 ? create_declaration_statement($3) : nullptr;
+            Statement* init = $3 ? create_declaration_statement($3, @3.first_line, @3.first_column) : nullptr;
             
             Expression* cond = nullptr;
             if ($4) {
                 ExpressionStatement* expr_stmt = dynamic_cast<ExpressionStatement*>($4);
                 if (expr_stmt) cond = expr_stmt->expr;
             }
-            $$ = create_for_statement(init, cond, $5, $7); 
+            $$ = create_for_statement(init, cond, $5, $7, @1.first_line, @1.first_column); 
         }
 	;
 
 jump_statement
     : GOTO IDENTIFIER ';'
-        { $$ = create_goto_statement(std::string($2)); }
+        { $$ = create_goto_statement(std::string($2), @1.first_line, @1.first_column); }
     | CONTINUE ';'
-        { $$ = create_continue_statement(); }
+        { $$ = create_continue_statement(@1.first_line, @1.first_column); }
     | BREAK ';'
-        { $$ = create_break_statement(); }
+        { $$ = create_break_statement(@1.first_line, @1.first_column); }
     | RETURN ';'
-        { $$ = create_return_statement(nullptr); }
+        { $$ = create_return_statement(nullptr, @1.first_line, @1.first_column); }
     | RETURN expression ';'
-        { $$ = create_return_statement($2); }
+        { $$ = create_return_statement($2, @1.first_line, @1.first_column); }
     ;
 
 translation_unit
