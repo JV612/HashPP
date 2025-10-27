@@ -1,0 +1,314 @@
+%option noyywrap
+%{
+// ============================================================================
+// PHASE 1 WITH AST: Enhanced tokenizer with AST and TAC support
+// ============================================================================
+
+// ============================================================================
+// *** NEW: AST and TAC Headers Added ***
+// These headers provide AST node classes and TAC generation capabilities
+// Include order matters: symbol_table → tac → ast → parser.tab.h
+// ============================================================================
+#include "symbol_table.h"   // NEW: Type system and symbol management
+#include "tac.h"            // NEW: Three-Address Code generation
+#include "expression.h"     // NEW: Expression AST nodes
+#include "statement.h"      // NEW: Statement AST nodes
+#include "declaration.h"    // NEW: Declaration AST nodes
+#include "diagnostics.h"
+
+#include "ansic.tab.h"  
+
+#include <string.h>
+#include <string>
+#include <stdlib.h>
+#include <vector>
+using namespace std;
+
+// Update location tracking for Bison
+#define YY_USER_ACTION \
+    yylloc.first_line = yylloc.last_line = yylineno; \
+    yylloc.first_column = yylloc.last_column; \
+    yylloc.last_column += yyleng;
+
+// ============================================================================
+// NOTE: The code below is from your original tokenizer.lpp
+// It handles token tracking and type management
+// The NEW includes above enable AST creation in the parser
+// ============================================================================
+
+struct TokenEntry {
+    int line;
+    string lexeme;
+    string token;
+    string token_type; 
+};
+
+vector<TokenEntry> token_table;
+
+void add_token(int line, const string& lexeme, const string& token, const string& token_type = "-") {
+    token_table.push_back({line, lexeme, token, token_type});
+}
+
+#include <unordered_map>
+
+enum TypeKind {
+    TYPE_KIND_BUILTIN,
+    TYPE_KIND_TYPEDEF,
+    TYPE_KIND_TAG_STRUCT,
+    TYPE_KIND_TAG_CLASS,
+    TYPE_KIND_TAG_ENUM,       /* <-- added */
+    TYPE_KIND_FORWARD_DECL
+};
+
+static std::vector<std::unordered_map<std::string, TypeKind>> type_scopes;
+
+static const TypeKind* find_type_kind(const char *name) {
+    if (!name) return nullptr;
+    std::string s(name);
+    for (int i = (int)type_scopes.size() - 1; i >= 0; --i) {
+        auto &map = type_scopes[i];
+        auto it = map.find(s);
+        if (it != map.end()) return &it->second;
+    }
+    return nullptr;
+}
+
+
+void types_init(void) {
+    type_scopes.clear();
+    type_scopes.emplace_back();
+    auto &g = type_scopes.back();
+    g["int"] = TYPE_KIND_BUILTIN;
+    g["char"] = TYPE_KIND_BUILTIN;
+    g["float"] = TYPE_KIND_BUILTIN;
+    g["double"] = TYPE_KIND_BUILTIN;
+    g["void"] = TYPE_KIND_BUILTIN;
+    g["bool"] = TYPE_KIND_BUILTIN;
+}
+
+void types_free(void) {
+    type_scopes.clear();
+}
+
+void types_enter_scope(void) {
+    type_scopes.emplace_back();
+}
+
+void types_leave_scope(void) {
+    if (!type_scopes.empty()) type_scopes.pop_back();
+    if (type_scopes.empty()) type_scopes.emplace_back(); 
+}
+
+void types_add_builtin(const char *name) {
+    if (!name) return;
+    type_scopes[0][std::string(name)] = TYPE_KIND_BUILTIN;
+}
+
+void types_add_typedef(const char *name) {
+    if (!name) return;
+    type_scopes.back()[std::string(name)] = TYPE_KIND_TYPEDEF;
+}
+
+void types_add_tag(const char *name, TypeKind kind) {
+    if (!name) return;
+    type_scopes.back()[std::string(name)] = kind;
+}
+
+void types_mark_defined(const char *name, TypeKind concrete_kind) {
+    if (!name) return;
+    std::string s(name);
+    for (int i = (int)type_scopes.size() - 1; i >= 0; --i) {
+        auto &map = type_scopes[i];
+        auto it = map.find(s);
+        if (it != map.end()) { it->second = concrete_kind; return; }
+    }
+    type_scopes.back()[s] = concrete_kind;
+}
+
+bool types_is_known(const char *name) {
+    return find_type_kind(name) != nullptr;
+}
+
+bool types_is_typedef(const char *name) {
+    const TypeKind *k = find_type_kind(name);
+    return k && (*k == TYPE_KIND_TYPEDEF);
+}
+
+bool types_is_complete(const char *name) {
+    const TypeKind *k = find_type_kind(name);
+    return k && (*k != TYPE_KIND_FORWARD_DECL);
+}
+
+
+
+%}
+
+DIGIT       [0-9]
+ID          [a-zA-Z_][a-zA-Z0-9_]*
+WS          [ \t]+
+NEWLINE     (\r\n|\r|\n)
+ESCAPE      \\[abfnrtv0\\'\\"]
+
+%%
+"int"       { add_token(yylineno, "int", "INT"); return INT; }
+"char"      { add_token(yylineno, "char", "CHAR"); return CHAR; }
+"double"    { add_token(yylineno, "double", "DOUBLE"); return DOUBLE; }
+"bool"      { add_token(yylineno, "bool", "BOOL"); return BOOL; }
+"if"        { add_token(yylineno, "if", "IF"); return IF; }
+"else"      { add_token(yylineno, "else", "ELSE"); return ELSE; }
+"for"       { add_token(yylineno, "for", "FOR"); return FOR; }
+"while"     { add_token(yylineno, "while", "WHILE"); return WHILE; }
+"until"     { add_token(yylineno, "until", "UNTIL"); return UNTIL; }
+"do"        { add_token(yylineno, "do", "DO"); return DO; }
+"break"     { add_token(yylineno, "break", "BREAK"); return BREAK; }
+"continue"  { add_token(yylineno, "continue", "CONTINUE"); return CONTINUE; }
+"goto"      { add_token(yylineno, "goto", "GOTO"); return GOTO; }
+"switch"    { add_token(yylineno, "switch", "SWITCH"); return SWITCH; }
+"case"      { add_token(yylineno, "case", "CASE"); return CASE; }
+"default"   { add_token(yylineno, "default", "DEFAULT"); return DEFAULT; }
+"return"    { add_token(yylineno, "return", "RETURN"); return RETURN; }
+"void"      { add_token(yylineno, "void", "VOID"); return VOID; }
+"typedef"   { add_token(yylineno, "typedef", "TYPEDEF"); return TYPEDEF; }
+"enum"      { add_token(yylineno, "enum", "ENUM"); return ENUM; }
+"union"     { add_token(yylineno, "union", "UNION"); return UNION; }
+"struct"    { add_token(yylineno, "struct", "STRUCT"); return STRUCT; }
+"static"    { add_token(yylineno, "static", "STATIC"); return STATIC; }
+"sizeof"    { add_token(yylineno, "sizeof", "SIZEOF"); return SIZEOF; }
+"true"      { add_token(yylineno, "true", "TRUE"); yylval.ival = 1; return BOOL_TRUE; }
+"false"     { add_token(yylineno, "false", "FALSE"); yylval.ival = 0; return BOOL_FALSE; }
+"NULL"      { add_token(yylineno, "null", "NULL"); yylval.ptr = NULL; return NULL_CONSTANT; }
+"nullptr"   { add_token(yylineno, "nullptr", "NULLPTR"); yylval.ptr = NULL; return NULLPTR_CONSTANT; }
+"const"     { add_token(yylineno, "const", "CONST"); return CONST; }
+"volatile"  { add_token(yylineno, "volatile", "VOLATILE"); return VOLATILE; }
+"class"     { add_token(yylineno, "class", "CLASS"); return CLASS; }
+"public"    { add_token(yylineno, "public", "PUBLIC"); return PUBLIC; }
+"private"   { add_token(yylineno, "private", "PRIVATE"); return PRIVATE; }
+"protected" { add_token(yylineno, "protected", "PROTECTED"); return PROTECTED; }
+"signed"    { add_token(yylineno, "signed", "SIGNED"); return SIGNED; }
+"unsigned"  { add_token(yylineno, "unsigned", "UNSIGNED"); return UNSIGNED; }
+"..."       { add_token(yylineno, "...", "ELLIPSIS"); return ELLIPSIS; }
+
+"//".*      { /* Skip comments */ }
+
+"+="        { add_token(yylineno, "+=", "ADD_ASSIGN"); return ADD_ASSIGN; }
+"-="        { add_token(yylineno, "-=", "SUB_ASSIGN"); return SUB_ASSIGN; }
+"*="        { add_token(yylineno, "*=", "MUL_ASSIGN"); return MUL_ASSIGN; }
+"/="        { add_token(yylineno, "/=", "DIV_ASSIGN"); return DIV_ASSIGN; }
+"%="        { add_token(yylineno, "%=", "MOD_ASSIGN"); return MOD_ASSIGN; }
+"^="        { add_token(yylineno, "^=", "XOR_ASSIGN"); return XOR_ASSIGN; }
+"&="        { add_token(yylineno, "&=", "AND_ASSIGN"); return AND_ASSIGN; }
+"|="        { add_token(yylineno, "|=", "OR_ASSIGN"); return OR_ASSIGN; }
+"<<="       { add_token(yylineno, "<<=", "LEFT_ASSIGN"); return LEFT_ASSIGN; }
+">>="       { add_token(yylineno, ">>=", "RIGHT_ASSIGN"); return RIGHT_ASSIGN; }
+"=="        { add_token(yylineno, "==", "EQ_OP"); return EQ_OP; }
+"!="        { add_token(yylineno, "!=", "NE_OP"); return NE_OP; }
+"&&"        { add_token(yylineno, "&&", "AND_OP"); return AND_OP; }
+"||"        { add_token(yylineno, "||", "OR_OP"); return OR_OP; }
+"->"        { add_token(yylineno, "->", "PTR_OP"); return PTR_OP; }
+"="         { add_token(yylineno, "=", "="); return '='; }
+"<="        { add_token(yylineno, "<=", "LE_OP"); return LE_OP; }
+">="        { add_token(yylineno, ">=", "GE_OP"); return GE_OP; }
+">>"        { add_token(yylineno, ">>", "RIGHT_OP"); return RIGHT_OP; }
+"<<"        { add_token(yylineno, "<<", "LEFT_OP"); return LEFT_OP; }
+"<"         { add_token(yylineno, "<", "LT_OP"); return '<'; }
+">"         { add_token(yylineno, ">", "GT_OP"); return '>'; }
+"!"         { add_token(yylineno, "!", "NOT_OP"); return '!'; }
+"++"        { add_token(yylineno, "++", "INC_OP"); return INC_OP; }
+"--"        { add_token(yylineno, "--", "DEC_OP"); return DEC_OP; }
+"+"         { add_token(yylineno, "+", "ADD_OP"); return '+'; }
+"-"         { add_token(yylineno, "-", "SUB_OP"); return '-'; }
+"*"         { add_token(yylineno, "*", "MUL_OP"); return '*'; }
+"/"         { add_token(yylineno, "/", "DIV_OP"); return '/'; }
+"%"         { add_token(yylineno, "%", "MOD_OP"); return '%'; }
+"^"         { add_token(yylineno, "^", "XOR_OP"); return '^'; }
+"&"         { add_token(yylineno, "&", "AND_OP"); return '&'; }
+"|"         { add_token(yylineno, "|", "OR_OP"); return '|'; }
+"~"         { add_token(yylineno, "~", "BITWISE_NOT"); return '~'; }
+"?"         { add_token(yylineno, "?", "TERNARY_OP"); return '?'; }
+":"         { add_token(yylineno, ":", "COLON"); return ':'; }
+
+"("         { add_token(yylineno, "(", "LEFT_PAREN"); return '('; }
+")"         { add_token(yylineno, ")", "RIGHT_PAREN"); return ')'; }
+"{"         { add_token(yylineno, "{", "LEFT_BRACE"); return '{'; }
+"}"         { add_token(yylineno, "}", "RIGHT_BRACE"); return '}'; }
+"["         { add_token(yylineno, "[", "LEFT_BRACKET"); return '['; }
+"]"         { add_token(yylineno, "]", "RIGHT_BRACKET"); return ']'; }
+";"         { add_token(yylineno, ";", "SEMICOLON"); return ';'; }
+","         { add_token(yylineno, ",", "COMMA"); return ','; }
+
+(({DIGIT}+"."{DIGIT}*)|("."{DIGIT}+)) {
+    yylval.fval = atof(yytext);
+    add_token(yylineno, yytext, "FLOAT_CONSTANT");
+    return FLOAT_CONSTANT;
+}
+
+"." {
+    add_token(yylineno, yytext, "DOT");
+    return '.';
+}
+
+{DIGIT}+ {
+    yylval.ival = atoi(yytext);
+    add_token(yylineno, yytext, "INTEGER_CONSTANT");
+    return INT_CONSTANT;
+}
+
+\'([^\\'\n]|{ESCAPE})\' {
+    char result;
+    if (yytext[1] == '\\') {
+        // Escape sequence
+        switch(yytext[2]) {
+            case 'a':  result = '\a'; break;
+            case 'b':  result = '\b'; break;
+            case 'f':  result = '\f'; break;
+            case 'n':  result = '\n'; break;
+            case 'r':  result = '\r'; break;
+            case 't':  result = '\t'; break;
+            case 'v':  result = '\v'; break;
+            case '0':  result = '\0'; break;
+            case '\\': result = '\\'; break;
+            case '\'': result = '\''; break;
+            case '\"': result = '\"'; break;
+            default:   result = yytext[2]; break;
+        }
+        yylval.cval = result;
+    } else {
+        // Regular character
+        yylval.cval = yytext[1];
+    }
+    add_token(yylineno, yytext, "CHAR_CONSTANT");
+    return CHAR_CONSTANT;
+}
+
+\"([^\\\"\n]|{ESCAPE})*\" {
+    yylval.str = strdup(yytext);
+    add_token(yylineno, yytext, "STRING_LITERAL");
+    return STRING_LITERAL;
+}
+
+{ID} {
+    if (types_is_known(yytext)) {
+        yylval.str = strdup(yytext);
+        return TYPE_NAME;
+    } else {
+        yylval.str = strdup(yytext);
+        return IDENTIFIER;
+    }
+}
+
+
+{WS}        { /* Skip whitespace */ }
+{NEWLINE}   { yylineno++; }
+
+.           { report_lexical_error(yylineno, "Unknown character '%s'", yytext); }
+
+%%
+
+void print_token_table() {
+    if (!debug) return;
+    printf("\n%-10s %-15s %-15s %-10s\n", "Line", "Lexeme", "Token", "Type");
+    printf("--------------------------------------------------------\n");
+    for (auto &t : token_table) {
+        printf("%-10d %-15s %-15s %-10s\n", t.line, t.lexeme.c_str(), t.token.c_str(), t.token_type.c_str());
+    }
+}
