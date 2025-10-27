@@ -9,10 +9,10 @@ extern int yylineno;
 
 namespace
 {
-int effective_line(int line)
-{
-    return line > 0 ? line : yylineno;
-}
+    int effective_line(int line)
+    {
+        return line > 0 ? line : yylineno;
+    }
 }
 
 #define SEM_ERROR(line, ...) report_semantic_error(effective_line(line), __VA_ARGS__)
@@ -593,10 +593,36 @@ int Type::get_total_size() const
  * For int *p, this returns sizeof(int) = 4
  * For int arr[5][3], this returns sizeof(int[3]) = 12
  * For int **p, this returns sizeof(int*) = 8
+ * For int* arr[10], this returns sizeof(int*) = 8
  */
 int Type::get_element_size() const
 {
-    // For pointers: size of what they point to
+    // For arrays: size of each element (not the whole array)
+    // Priority: handle arrays first, because we can have arrays OF pointers
+    if (is_array)
+    {
+        if (array_dim > 1)
+        {
+            // Multi-dimensional array: element is a sub-array
+            // int arr[5][3][4] -> element is int[3][4]
+            int size = get_size(); // Base type size (considering pointer_level)
+            for (int i = 1; i < array_dim; i++)
+            {
+                size *= array_sizes[i];
+            }
+            return size;
+        }
+        else
+        {
+            // Single-dimensional array: element is the base type (with pointer_level)
+            // int arr[10] -> element is int (size 4)
+            // int* arr[10] -> element is int* (size 8)
+            // int** arr[10] -> element is int** (size 8)
+            return get_size(); // This considers pointer_level
+        }
+    }
+
+    // For pointers (not arrays): size of what they point to
     if (pointer_level > 0)
     {
         // Create a type with one less pointer level
@@ -605,18 +631,7 @@ int Type::get_element_size() const
         return pointed_type.get_size();
     }
 
-    // For arrays: size of sub-array (all dimensions except first)
-    if (is_array && array_dim > 1)
-    {
-        int size = get_size(); // Base type size
-        for (int i = 1; i < array_dim; i++)
-        {
-            size *= array_sizes[i];
-        }
-        return size;
-    }
-
-    // For 1D arrays or non-arrays: just the base type size
+    // For non-arrays, non-pointers: just the base type size
     return get_size();
 }
 
@@ -1134,7 +1149,7 @@ bool is_type_compatible(const Type &target_type, const Type &source_type, bool a
         // For struct/union types, also check that names and union flag match
         if (target_type.is_struct && source_type.is_struct)
         {
-            return (target_type.struct_name == source_type.struct_name && 
+            return (target_type.struct_name == source_type.struct_name &&
                     target_type.is_union == source_type.is_union);
         }
         // For class types, check that names match
@@ -1143,12 +1158,12 @@ bool is_type_compatible(const Type &target_type, const Type &source_type, bool a
             return (target_type.class_name == source_type.class_name);
         }
         // For primitive types (int, float, char, etc.) or identical complex types
-        else if (!target_type.is_struct && !source_type.is_struct && 
+        else if (!target_type.is_struct && !source_type.is_struct &&
                  !target_type.is_class && !source_type.is_class)
         {
             return true;
         }
-        
+
         return false; // Different complex type categories
     }
 
@@ -1161,7 +1176,7 @@ bool is_type_compatible(const Type &target_type, const Type &source_type, bool a
     // ========================================================================
     // POINTER COMPATIBILITY RULES (C-style)
     // ========================================================================
-    
+
     // Rule 1: void* is compatible with any pointer type (both directions)
     if (target_type.pointer_level > 0 && source_type.pointer_level > 0)
     {
@@ -1171,7 +1186,7 @@ bool is_type_compatible(const Type &target_type, const Type &source_type, bool a
         {
             return true;
         }
-        
+
         // T* -> void* (any pointer type to void*)
         if (target_type.base_type == TYPE_VOID && target_type.pointer_level == 1 &&
             source_type.pointer_level == 1)
@@ -1179,7 +1194,7 @@ bool is_type_compatible(const Type &target_type, const Type &source_type, bool a
             return true;
         }
     }
-    
+
     // Rule 2: Null constant (represented as void*) can be assigned to any pointer type
     if (target_type.pointer_level > 0 &&
         source_type.base_type == TYPE_VOID && source_type.pointer_level == 1)
@@ -1190,8 +1205,8 @@ bool is_type_compatible(const Type &target_type, const Type &source_type, bool a
     // ========================================================================
     // ARRAY DECAY TO POINTER
     // ========================================================================
-    if (source_type.is_array && 
-        target_type.pointer_level > 0 && 
+    if (source_type.is_array &&
+        target_type.pointer_level > 0 &&
         !target_type.is_array &&
         source_type.array_dim == 1 &&
         target_type.pointer_level == (source_type.pointer_level + 1))
@@ -1204,14 +1219,14 @@ bool is_type_compatible(const Type &target_type, const Type &source_type, bool a
             // For struct/class arrays, names must match too
             if (target_type.is_struct && source_type.is_struct)
             {
-                return (target_type.struct_name == source_type.struct_name && 
+                return (target_type.struct_name == source_type.struct_name &&
                         target_type.is_union == source_type.is_union);
             }
             else if (target_type.is_class && source_type.is_class)
             {
                 return (target_type.class_name == source_type.class_name);
             }
-            else if (!target_type.is_struct && !source_type.is_struct && 
+            else if (!target_type.is_struct && !source_type.is_struct &&
                      !target_type.is_class && !source_type.is_class)
             {
                 return true; // Primitive array decay
@@ -1222,7 +1237,7 @@ bool is_type_compatible(const Type &target_type, const Type &source_type, bool a
     // ========================================================================
     // STRICT RULES: NO IMPLICIT CONVERSIONS FOR STRUCTURED TYPES
     // ========================================================================
-    
+
     // Struct/Class/Union types: NO implicit conversions between different types
     // Note: Enums are excluded here because they should be compatible with integers
     if ((target_type.is_struct || target_type.is_class) ||
@@ -1231,7 +1246,7 @@ bool is_type_compatible(const Type &target_type, const Type &source_type, bool a
         // These types can only be compatible through exact match (handled above)
         return false;
     }
-    
+
     // ========================================================================
     // ENUM ↔ INTEGER COMPATIBILITY (C-style)
     // ========================================================================
@@ -1241,13 +1256,13 @@ bool is_type_compatible(const Type &target_type, const Type &source_type, bool a
         !target_type.is_class && !source_type.is_class)
     {
         // enum -> int, char, bool conversions
-        if (source_type.base_type == TYPE_ENUM && 
+        if (source_type.base_type == TYPE_ENUM &&
             (target_type.base_type == TYPE_INT || target_type.base_type == TYPE_CHAR || target_type.base_type == TYPE_BOOL))
         {
             return true;
         }
-        
-        // int, char -> enum conversions  
+
+        // int, char -> enum conversions
         if (target_type.base_type == TYPE_ENUM &&
             (source_type.base_type == TYPE_INT || source_type.base_type == TYPE_CHAR))
         {
@@ -1257,7 +1272,7 @@ bool is_type_compatible(const Type &target_type, const Type &source_type, bool a
 
     // ========================================================================
     // NUMERIC TYPE CONVERSIONS (C-style: int, char, float, bool)
-    // ========================================================================  
+    // ========================================================================
     if (target_type.pointer_level == 0 && source_type.pointer_level == 0 &&
         !target_type.is_array && !source_type.is_array &&
         !target_type.is_struct && !source_type.is_struct &&
@@ -1288,12 +1303,12 @@ bool should_warn_implicit_conversion(const Type &target_type, const Type &source
         // float/double -> int (truncation)
         if (source_type.base_type == TYPE_FLOAT && target_type.is_integer())
             return true;
-        
+
         // Warn for any non-exact numeric type conversion
         if (target_type.base_type != source_type.base_type)
             return true;
     }
-    
+
     // Warn for enum ↔ integer conversions (valid but potentially unsafe)
     if (target_type.pointer_level == 0 && source_type.pointer_level == 0 &&
         !target_type.is_array && !source_type.is_array &&
@@ -1301,12 +1316,12 @@ bool should_warn_implicit_conversion(const Type &target_type, const Type &source
         !target_type.is_class && !source_type.is_class)
     {
         // enum -> int/char/bool (warn about potential value range issues)
-        if (source_type.base_type == TYPE_ENUM && 
+        if (source_type.base_type == TYPE_ENUM &&
             (target_type.base_type == TYPE_INT || target_type.base_type == TYPE_CHAR || target_type.base_type == TYPE_BOOL))
         {
             return true;
         }
-        
+
         // int/char -> enum (warn about potential invalid enum values)
         if (target_type.base_type == TYPE_ENUM &&
             (source_type.base_type == TYPE_INT || source_type.base_type == TYPE_CHAR))
@@ -1314,7 +1329,7 @@ bool should_warn_implicit_conversion(const Type &target_type, const Type &source
             return true;
         }
     }
-    
+
     // Warn for pointer conversions involving void*
     if (target_type.pointer_level > 0 && source_type.pointer_level > 0)
     {
@@ -1327,7 +1342,7 @@ bool should_warn_implicit_conversion(const Type &target_type, const Type &source
             return true;
         }
     }
-    
+
     return false;
 }
 
@@ -1365,8 +1380,9 @@ int find_function_match(const std::string &name, const std::vector<Type> &argTyp
 
 void print_function_signatures()
 {
-    if (!function_debug) return;
-    
+    if (!function_debug)
+        return;
+
     if (function_signatures.empty())
     {
         cout << "\n[No Function Signatures Registered]\n"
@@ -1406,43 +1422,50 @@ void print_function_signatures()
 // ===================== Method Registry =====================
 
 MethodSignature *register_method(const std::string &class_name, const std::string &method_name,
-                                  const std::vector<Type> &params, const Type &retType, 
-                                  bool is_constructor, bool is_destructor, AccessLevel access)
+                                 const std::vector<Type> &params, const Type &retType,
+                                 bool is_constructor, bool is_destructor, AccessLevel access)
 {
     // Constructor/Destructor validation
-    if (is_constructor) {
+    if (is_constructor)
+    {
         // Constructor must have same name as class and void return type
-        if (method_name != class_name) {
+        if (method_name != class_name)
+        {
             cerr << "[Semantic Error] Constructor name '" << method_name << "' must match class name '" << class_name << "'\n";
             semantic_error_count++;
             return nullptr;
         }
-        if (retType.base_type != TYPE_VOID) {
+        if (retType.base_type != TYPE_VOID)
+        {
             cerr << "[Semantic Error] Constructor '" << class_name << "::" << method_name << "' must have void return type\n";
             semantic_error_count++;
             return nullptr;
         }
     }
-    
-    if (is_destructor) {
+
+    if (is_destructor)
+    {
         // Destructor must have ~ClassName name, no parameters, and void return type
-        if (method_name != ("~" + class_name)) {
+        if (method_name != ("~" + class_name))
+        {
             cerr << "[Semantic Error] Destructor name '" << method_name << "' must be '~" << class_name << "'\n";
             semantic_error_count++;
             return nullptr;
         }
-        if (!params.empty()) {
+        if (!params.empty())
+        {
             cerr << "[Semantic Error] Destructor '" << class_name << "::" << method_name << "' cannot have parameters\n";
             semantic_error_count++;
             return nullptr;
         }
-        if (retType.base_type != TYPE_VOID) {
+        if (retType.base_type != TYPE_VOID)
+        {
             cerr << "[Semantic Error] Destructor '" << class_name << "::" << method_name << "' must have void return type\n";
             semantic_error_count++;
             return nullptr;
         }
     }
-    
+
     // Check if method with same signature already exists in this class
     MethodSignature *existing = find_method_match(class_name, method_name, params);
     if (existing)
@@ -1454,8 +1477,9 @@ MethodSignature *register_method(const std::string &class_name, const std::strin
     }
 
     // Validation: No regular method should have the same name as class (only constructors allowed)
-    if (!is_constructor && method_name == class_name) {
-        cerr << "[Semantic Error] Method '" << class_name << "::" << method_name 
+    if (!is_constructor && method_name == class_name)
+    {
+        cerr << "[Semantic Error] Method '" << class_name << "::" << method_name
              << "' cannot have same name as class (only constructors allowed)\n";
         semantic_error_count++;
         return nullptr;
@@ -1481,25 +1505,25 @@ MethodSignature *register_method(const std::string &class_name, const std::strin
     new_method.access_level = access;
     new_method.is_constructor = is_constructor;
     new_method.is_destructor = is_destructor;
-    
+
     // Generate mangled name for TAC
     new_method.mangled_name = mangle_method_for_tac(class_name, method_name, new_method);
-    
+
     // Add to global registry
     method_signatures.push_back(new_method);
-    
-    const char* method_type = is_constructor ? "constructor" : (is_destructor ? "destructor" : "method");
+
+    const char *method_type = is_constructor ? "constructor" : (is_destructor ? "destructor" : "method");
     if (debug)
     {
         printf("[Method Registry] Registered %s '%s::%s' with ID %d, mangled as '%s'\n",
                method_type, class_name.c_str(), method_name.c_str(), max_id, new_method.mangled_name.c_str());
     }
-    
+
     return &method_signatures.back();
 }
 
 MethodSignature *find_method_match(const std::string &class_name, const std::string &method_name,
-                                     const std::vector<Type> &argTypes)
+                                   const std::vector<Type> &argTypes)
 {
     for (auto &ms : method_signatures)
     {
@@ -1534,11 +1558,13 @@ std::string mangle_method_for_tac(const std::string &class_name, const std::stri
 
 void print_method_signatures()
 {
-    if (!method_debug) return;
-    
+    if (!method_debug)
+        return;
+
     if (method_signatures.empty())
     {
-        cout << "\n[No Method Signatures Registered]\n" << endl;
+        cout << "\n[No Method Signatures Registered]\n"
+             << endl;
         return;
     }
 
@@ -1567,23 +1593,27 @@ void print_method_signatures()
         cout << setw(30) << paramStr;
 
         cout << setw(15) << ms.returnType.to_string();
-        
+
         // Method type
         string methodType = "method";
-        if (ms.is_constructor) methodType = "constructor";
-        else if (ms.is_destructor) methodType = "destructor";
+        if (ms.is_constructor)
+            methodType = "constructor";
+        else if (ms.is_destructor)
+            methodType = "destructor";
         cout << setw(12) << methodType;
-        
+
         cout << setw(15) << ms.mangled_name << endl;
     }
 
-    cout << "------------------------------------------------------------------------------------\n" << endl;
+    cout << "------------------------------------------------------------------------------------\n"
+         << endl;
 }
 
 void SymbolTable::print() const
 {
-    if (!symbol_debug) return;
-    
+    if (!symbol_debug)
+        return;
+
     if (table.empty())
     {
         cout << "\n[Symbol Table is empty]\n"
@@ -1667,38 +1697,42 @@ void register_builtin_io_functions()
 // Bool Compatibility Checking
 // ============================================================================
 
-bool is_bool_compatible(const Type& type) {
+bool is_bool_compatible(const Type &type)
+{
     // C-style bool compatibility rules:
     // - Numeric types (int, char, float, double) are bool-compatible (0 = false, non-zero = true)
-    // - Pointers are bool-compatible (NULL = false, non-NULL = true)  
+    // - Pointers are bool-compatible (NULL = false, non-NULL = true)
     // - Enums are bool-compatible (like integers)
     // - bool is obviously bool-compatible
     // - struct/class/union are NOT bool-compatible (C standard)
-    
-    if (type.is_error()) {
+
+    if (type.is_error())
+    {
         return false;
     }
-    
+
     // Pointers (including arrays which decay to pointers) are bool-compatible
-    if (type.is_pointer() || type.is_array) {
+    if (type.is_pointer() || type.is_array)
+    {
         return true;
     }
-    
+
     // Check base types
-    switch (type.base_type) {
-        case TYPE_INT:
-        case TYPE_CHAR:  
-        case TYPE_FLOAT:
-        case TYPE_BOOL:
-        case TYPE_ENUM:
-            return true;
-            
-        case TYPE_VOID:
-            // void is not bool-compatible unless it's a pointer (handled above)
-            return false;
-            
-        default:
-            // struct/class/union are not bool-compatible
-            return false;
+    switch (type.base_type)
+    {
+    case TYPE_INT:
+    case TYPE_CHAR:
+    case TYPE_FLOAT:
+    case TYPE_BOOL:
+    case TYPE_ENUM:
+        return true;
+
+    case TYPE_VOID:
+        // void is not bool-compatible unless it's a pointer (handled above)
+        return false;
+
+    default:
+        // struct/class/union are not bool-compatible
+        return false;
     }
 }

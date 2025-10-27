@@ -234,11 +234,13 @@ void PrimaryExpression::generate_tac()
                     TACOperand offset_operand(TACOperand::OPERAND_CONSTANT, std::to_string(member_offset));
 
                     // Calculate address: this + offset
-                    TACOperand addr_temp = tacGen.newTemp();
+                    Type *ptr_type = new Type(member_type);
+                    ptr_type->pointer_level++;
+                    TACOperand addr_temp = tacGen.newTemp(ptr_type);
                     tacGen.emit(TAC_ADD, addr_temp, this_ptr, offset_operand);
 
                     // Dereference to get member value
-                    TACOperand member_temp = tacGen.newTemp();
+                    TACOperand member_temp = tacGen.newTemp(&member_type);
                     tacGen.emit(TAC_DEREF, member_temp, addr_temp, TACOperand());
 
                     result = new TACOperand(member_temp);
@@ -342,6 +344,25 @@ void PrimaryExpression::generate_tac()
         // Boolean constants (true/false)
         result = new TACOperand(TACOperand::OPERAND_CONSTANT, bool_value ? "1" : "0");
         type = new Type(TYPE_BOOL);
+
+        // Generate truelist/falselist for use in control flow contexts
+        if (bool_value)
+        {
+            // true: generate unconditional jump (will go to truelist target)
+            int jump_instr = tacGen.emit(TAC_GOTO, TACOperand(), TACOperand());
+            code.push_back(tacGen.getCode().back());
+            truelist.push_back(jump_instr);
+            // falselist is empty (never take false branch)
+        }
+        else
+        {
+            // false: generate unconditional jump (will go to falselist target)
+            int jump_instr = tacGen.emit(TAC_GOTO, TACOperand(), TACOperand());
+            code.push_back(tacGen.getCode().back());
+            falselist.push_back(jump_instr);
+            // truelist is empty (never take true branch)
+        }
+
         if (debug)
         {
             cout << "[AST] Boolean constant: " << (bool_value ? "true" : "false") << endl;
@@ -437,6 +458,21 @@ void BinaryExpression::generate_tac()
         left->generate_tac();
         code = left->code;
 
+        // Handle case where left operand doesn't have truelist/falselist
+        if (left->truelist.empty() && left->falselist.empty())
+        {
+            // Generate: if left goto ___ (truelist)
+            int true_jump = tacGen.emit(TAC_IF_GOTO, TACOperand(), *left->result);
+            code.push_back(tacGen.getCode().back());
+
+            // Generate: goto ___ (falselist)
+            int false_jump = tacGen.emit(TAC_GOTO, TACOperand(), TACOperand());
+            code.push_back(tacGen.getCode().back());
+
+            left->truelist = makelist(true_jump);
+            left->falselist = makelist(false_jump);
+        }
+
         // M: marker - current position before E2
         int M = tacGen.nextinstr();
         backpatch(left->truelist, M);
@@ -444,19 +480,32 @@ void BinaryExpression::generate_tac()
         right->generate_tac();
         code.insert(code.end(), right->code.begin(), right->code.end());
 
+        // Handle case where right operand doesn't have truelist/falselist
+        // (e.g., simple variable like 'a' in 'b && a')
+        if (right->truelist.empty() && right->falselist.empty())
+        {
+            // Generate: if right goto ___ (truelist)
+            int true_jump = tacGen.emit(TAC_IF_GOTO, TACOperand(), *right->result);
+            code.push_back(tacGen.getCode().back());
+
+            // Generate: goto ___ (falselist)
+            int false_jump = tacGen.emit(TAC_GOTO, TACOperand(), TACOperand());
+            code.push_back(tacGen.getCode().back());
+
+            right->truelist = makelist(true_jump);
+            right->falselist = makelist(false_jump);
+        }
+
         // Merge lists
         falselist = merge(left->falselist, right->falselist);
         truelist = right->truelist;
 
-        // For assignment contexts, create a result operand and compute the logical AND
-        TACOperand temp = tacGen.newTemp();
-        result = new TACOperand(temp);
+        // Set result and type for potential use in assignments
+        // Note: The actual control flow is handled by truelist/falselist backpatching
+        // We only generate explicit result if needed (e.g., bool b = a && c;)
+        // For now, just set the result to the right operand
+        result = right->result;
         type = new Type(TYPE_BOOL);
-
-        // Generate TAC for logical AND: temp = left_result && right_result
-        // This will emit the actual logical AND operation
-        tacGen.emit(TAC_LOGICAL_AND, *result, *left->result, *right->result);
-        code.push_back(tacGen.getCode().back());
 
         // Type checking - logical operators accept numeric types or pointers (C semantics)
         if (!left->type || !right->type || left->type->is_error() || right->type->is_error())
@@ -485,6 +534,21 @@ void BinaryExpression::generate_tac()
         left->generate_tac();
         code = left->code;
 
+        // Handle case where left operand doesn't have truelist/falselist
+        if (left->truelist.empty() && left->falselist.empty())
+        {
+            // Generate: if left goto ___ (truelist)
+            int true_jump = tacGen.emit(TAC_IF_GOTO, TACOperand(), *left->result);
+            code.push_back(tacGen.getCode().back());
+
+            // Generate: goto ___ (falselist)
+            int false_jump = tacGen.emit(TAC_GOTO, TACOperand(), TACOperand());
+            code.push_back(tacGen.getCode().back());
+
+            left->truelist = makelist(true_jump);
+            left->falselist = makelist(false_jump);
+        }
+
         // M: marker - current position before E2
         int M = tacGen.nextinstr();
         backpatch(left->falselist, M);
@@ -492,19 +556,29 @@ void BinaryExpression::generate_tac()
         right->generate_tac();
         code.insert(code.end(), right->code.begin(), right->code.end());
 
+        // Handle case where right operand doesn't have truelist/falselist
+        if (right->truelist.empty() && right->falselist.empty())
+        {
+            // Generate: if right goto ___ (truelist)
+            int true_jump = tacGen.emit(TAC_IF_GOTO, TACOperand(), *right->result);
+            code.push_back(tacGen.getCode().back());
+
+            // Generate: goto ___ (falselist)
+            int false_jump = tacGen.emit(TAC_GOTO, TACOperand(), TACOperand());
+            code.push_back(tacGen.getCode().back());
+
+            right->truelist = makelist(true_jump);
+            right->falselist = makelist(false_jump);
+        }
+
         // Merge lists
         truelist = merge(left->truelist, right->truelist);
         falselist = right->falselist;
 
-        // For assignment contexts, create a result operand and compute the logical OR
-        TACOperand temp = tacGen.newTemp();
-        result = new TACOperand(temp);
+        // Set result and type for potential use in assignments
+        // Note: The actual control flow is handled by truelist/falselist backpatching
+        result = right->result;
         type = new Type(TYPE_BOOL);
-
-        // Generate TAC for logical OR: temp = left_result || right_result
-        // This will emit the actual logical OR operation
-        tacGen.emit(TAC_LOGICAL_OR, *result, *left->result, *right->result);
-        code.push_back(tacGen.getCode().back());
 
         // Type checking - logical operators accept numeric types or pointers (C semantics)
         if (!left->type || !right->type || left->type->is_error() || right->type->is_error())
@@ -870,24 +944,32 @@ void BinaryExpression::generate_tac()
     if (is_relational)
     {
         // For relational expressions, generate simple comparison result
-        // Backpatching with truelist/falselist is only needed in control flow contexts
+        // And create truelist/falselist for backpatching in control flow contexts
 
-        // Create new temporary for the comparison result
-        TACOperand temp = tacGen.newTemp();
+        // Create new temporary for the comparison result (type is bool)
+        TACOperand temp = tacGen.newTemp(type);
         result = new TACOperand(temp);
 
         // Emit the comparison operation (simple assignment)
         tacGen.emit(op, *result, *left->result, *right->result);
         code.push_back(tacGen.getCode().back());
 
-        // Note: truelist/falselist remain empty for simple assignment contexts
-        // They will be populated by control flow structures if needed
+        // Generate conditional jumps for backpatching
+        // truelist: jump if condition is true (target to be filled later)
+        int true_jump = tacGen.emit(TAC_IF_GOTO, TACOperand(), *result);
+        code.push_back(tacGen.getCode().back());
+        truelist.push_back(true_jump);
+
+        // falselist: unconditional jump when condition is false (target to be filled later)
+        int false_jump = tacGen.emit(TAC_GOTO, TACOperand(), TACOperand());
+        code.push_back(tacGen.getCode().back());
+        falselist.push_back(false_jump);
     }
     else
     {
         // Arithmetic/bitwise operations: compute value normally
-        // Create new temporary for result
-        TACOperand temp = tacGen.newTemp();
+        // Create new temporary for result (with type)
+        TACOperand temp = tacGen.newTemp(type);
         result = new TACOperand(temp);
 
         // Emit the operation
@@ -914,6 +996,35 @@ void BinaryExpression::handle_pointer_plus_integer(Expression *ptr_expr, Express
     // Get element size for scaling
     int elem_size = ptr_expr->type->get_element_size();
 
+    // Calculate result type FIRST (before generating TAC)
+    if (ptr_expr->type->is_array)
+    {
+        // Array decay removes the outermost dimension
+        type = new Type(*ptr_expr->type);
+        type->pointer_level = ptr_expr->type->pointer_level + 1;
+
+        if (ptr_expr->type->array_dim > 1)
+        {
+            type->is_array = true;
+            type->array_dim = ptr_expr->type->array_dim - 1;
+            type->array_sizes = std::vector<int>(
+                ptr_expr->type->array_sizes.begin() + 1,
+                ptr_expr->type->array_sizes.end());
+        }
+        else
+        {
+            // Single dimension array decays to pointer (no array anymore)
+            type->is_array = false;
+            type->array_dim = 0;
+            type->array_sizes.clear();
+        }
+    }
+    else
+    {
+        // Pointer + int = same pointer type
+        type = new Type(*ptr_expr->type);
+    }
+
     // Combine code from both operands
     code.insert(code.end(), ptr_expr->code.begin(), ptr_expr->code.end());
     code.insert(code.end(), int_expr->code.begin(), int_expr->code.end());
@@ -923,7 +1034,10 @@ void BinaryExpression::handle_pointer_plus_integer(Expression *ptr_expr, Express
     if (ptr_expr->type->is_array)
     {
         // Array needs address-of to decay to pointer
-        ptr_operand = tacGen.newTemp();
+        Type *ptr_type = new Type(*ptr_expr->type);
+        ptr_type->is_array = false;
+        ptr_type->pointer_level = 1;
+        ptr_operand = tacGen.newTemp(ptr_type);
         tacGen.emit(TAC_ADDR_OF, ptr_operand, *ptr_expr->result);
         code.push_back(tacGen.getCode().back());
     }
@@ -934,51 +1048,20 @@ void BinaryExpression::handle_pointer_plus_integer(Expression *ptr_expr, Express
 
     // Step 1: Scale the integer by element size
     // _t1 = integer * elem_size
-    TACOperand scale_temp = tacGen.newTemp();
+    Type *int_type = new Type(TYPE_INT);
+    TACOperand scale_temp = tacGen.newTemp(int_type);
     TACOperand size_operand(TACOperand::OPERAND_CONSTANT, std::to_string(elem_size));
     tacGen.emit(TAC_MUL, scale_temp, *int_expr->result, size_operand);
     code.push_back(tacGen.getCode().back());
 
     // Step 2: Add scaled offset to pointer
     // result = pointer + _t1
-    TACOperand result_temp = tacGen.newTemp();
+    TACOperand result_temp = tacGen.newTemp(type);
     tacGen.emit(TAC_ADD, result_temp, ptr_operand, scale_temp);
     code.push_back(tacGen.getCode().back());
 
-    // Result type: decay array to pointer
+    // Result is the computed pointer (type was calculated earlier)
     result = new TACOperand(result_temp);
-    if (ptr_expr->type->is_array)
-    {
-        // Array decay removes the outermost dimension
-        // int arr[5] + 1 -> int* (pointer to int)
-        // int arr[3][4] + 1 -> int (*)[4] (pointer to array of 4 ints)
-        // int arr[2][3][4] + 1 -> int (*)[3][4] (pointer to array of [3][4] ints)
-        type = new Type(*ptr_expr->type);
-        type->pointer_level = 1;
-
-        if (ptr_expr->type->array_dim > 1)
-        {
-            // Multi-dimensional: remove first dimension, keep rest as array
-            type->is_array = true;
-            type->array_dim = ptr_expr->type->array_dim - 1;
-            // Remove the first size from array_sizes
-            type->array_sizes = std::vector<int>(
-                ptr_expr->type->array_sizes.begin() + 1,
-                ptr_expr->type->array_sizes.end());
-        }
-        else
-        {
-            // Single dimension: becomes simple pointer
-            type->is_array = false;
-            type->array_dim = 0;
-            type->array_sizes.clear();
-        }
-    }
-    else
-    {
-        // Pointer type stays the same
-        type = new Type(*ptr_expr->type);
-    }
 
     if (debug)
         printf("[AST] Pointer arithmetic: pointer + integer (scaled by %d)\n", elem_size);
@@ -989,6 +1072,34 @@ void BinaryExpression::handle_pointer_minus_integer(Expression *ptr_expr, Expres
     // Get element size for scaling
     int elem_size = ptr_expr->type->get_element_size();
 
+    // Calculate result type FIRST (before generating TAC)
+    if (ptr_expr->type->is_array)
+    {
+        // Array decay removes the outermost dimension
+        type = new Type(*ptr_expr->type);
+        type->pointer_level = ptr_expr->type->pointer_level + 1;
+
+        if (ptr_expr->type->array_dim > 1)
+        {
+            type->is_array = true;
+            type->array_dim = ptr_expr->type->array_dim - 1;
+            type->array_sizes = std::vector<int>(
+                ptr_expr->type->array_sizes.begin() + 1,
+                ptr_expr->type->array_sizes.end());
+        }
+        else
+        {
+            type->is_array = false;
+            type->array_dim = 0;
+            type->array_sizes.clear();
+        }
+    }
+    else
+    {
+        // Pointer - int = same pointer type
+        type = new Type(*ptr_expr->type);
+    }
+
     // Combine code from both operands
     code.insert(code.end(), ptr_expr->code.begin(), ptr_expr->code.end());
     code.insert(code.end(), int_expr->code.begin(), int_expr->code.end());
@@ -998,7 +1109,10 @@ void BinaryExpression::handle_pointer_minus_integer(Expression *ptr_expr, Expres
     if (ptr_expr->type->is_array)
     {
         // Array needs address-of to decay to pointer
-        ptr_operand = tacGen.newTemp();
+        Type *ptr_type = new Type(*ptr_expr->type);
+        ptr_type->is_array = false;
+        ptr_type->pointer_level = 1;
+        ptr_operand = tacGen.newTemp(ptr_type);
         tacGen.emit(TAC_ADDR_OF, ptr_operand, *ptr_expr->result);
         code.push_back(tacGen.getCode().back());
     }
@@ -1009,50 +1123,20 @@ void BinaryExpression::handle_pointer_minus_integer(Expression *ptr_expr, Expres
 
     // Step 1: Scale the integer by element size
     // _t1 = integer * elem_size
-    TACOperand scale_temp = tacGen.newTemp();
+    Type *int_type = new Type(TYPE_INT);
+    TACOperand scale_temp = tacGen.newTemp(int_type);
     TACOperand size_operand(TACOperand::OPERAND_CONSTANT, std::to_string(elem_size));
     tacGen.emit(TAC_MUL, scale_temp, *int_expr->result, size_operand);
     code.push_back(tacGen.getCode().back());
 
     // Step 2: Subtract scaled offset from pointer
     // result = pointer - _t1
-    TACOperand result_temp = tacGen.newTemp();
+    TACOperand result_temp = tacGen.newTemp(type);
     tacGen.emit(TAC_SUB, result_temp, ptr_operand, scale_temp);
     code.push_back(tacGen.getCode().back());
 
-    // Result type: decay array to pointer
+    // Result is the computed pointer (type was calculated earlier)
     result = new TACOperand(result_temp);
-    if (ptr_expr->type->is_array)
-    {
-        // Array decay removes the outermost dimension
-        // int arr[5] - 1 -> int* (pointer to int)
-        // int arr[3][4] - 1 -> int (*)[4] (pointer to array of 4 ints)
-        type = new Type(*ptr_expr->type);
-        type->pointer_level = 1;
-
-        if (ptr_expr->type->array_dim > 1)
-        {
-            // Multi-dimensional: remove first dimension, keep rest as array
-            type->is_array = true;
-            type->array_dim = ptr_expr->type->array_dim - 1;
-            // Remove the first size from array_sizes
-            type->array_sizes = std::vector<int>(
-                ptr_expr->type->array_sizes.begin() + 1,
-                ptr_expr->type->array_sizes.end());
-        }
-        else
-        {
-            // Single dimension: becomes simple pointer
-            type->is_array = false;
-            type->array_dim = 0;
-            type->array_sizes.clear();
-        }
-    }
-    else
-    {
-        // Pointer type stays the same
-        type = new Type(*ptr_expr->type);
-    }
 
     if (debug)
         printf("[AST] Pointer arithmetic: pointer - integer (scaled by %d)\n", elem_size);
@@ -1103,7 +1187,10 @@ void BinaryExpression::handle_pointer_minus_pointer(Expression *left_ptr, Expres
     TACOperand left_operand;
     if (left_ptr->type->is_array)
     {
-        left_operand = tacGen.newTemp();
+        Type *ptr_type = new Type(*left_ptr->type);
+        ptr_type->is_array = false;
+        ptr_type->pointer_level = 1;
+        left_operand = tacGen.newTemp(ptr_type);
         tacGen.emit(TAC_ADDR_OF, left_operand, *left_ptr->result);
         code.push_back(tacGen.getCode().back());
     }
@@ -1115,7 +1202,10 @@ void BinaryExpression::handle_pointer_minus_pointer(Expression *left_ptr, Expres
     TACOperand right_operand;
     if (right_ptr->type->is_array)
     {
-        right_operand = tacGen.newTemp();
+        Type *ptr_type = new Type(*right_ptr->type);
+        ptr_type->is_array = false;
+        ptr_type->pointer_level = 1;
+        right_operand = tacGen.newTemp(ptr_type);
         tacGen.emit(TAC_ADDR_OF, right_operand, *right_ptr->result);
         code.push_back(tacGen.getCode().back());
     }
@@ -1126,13 +1216,14 @@ void BinaryExpression::handle_pointer_minus_pointer(Expression *left_ptr, Expres
 
     // Step 1: Byte-level subtraction
     // _t1 = left_ptr - right_ptr
-    TACOperand diff_temp = tacGen.newTemp();
+    Type *int_type = new Type(TYPE_INT);
+    TACOperand diff_temp = tacGen.newTemp(int_type);
     tacGen.emit(TAC_SUB, diff_temp, left_operand, right_operand);
     code.push_back(tacGen.getCode().back());
 
     // Step 2: Unscale by element size to get number of elements
     // result = _t1 / elem_size
-    TACOperand result_temp = tacGen.newTemp();
+    TACOperand result_temp = tacGen.newTemp(int_type);
     TACOperand size_operand(TACOperand::OPERAND_CONSTANT, std::to_string(elem_size));
     tacGen.emit(TAC_DIV, result_temp, diff_temp, size_operand);
     code.push_back(tacGen.getCode().back());
@@ -1235,13 +1326,14 @@ void UnaryExpression::generate_tac()
             int elem_size = array_expr->array->type->get_element_size();
 
             // t1 = index * elem_size
-            TACOperand t1 = tacGen.newTemp();
+            Type *int_type = new Type(TYPE_INT);
+            TACOperand t1 = tacGen.newTemp(int_type);
             TACOperand elem_size_op(TACOperand::OPERAND_CONSTANT, std::to_string(elem_size));
             tacGen.emit(TAC_MUL, t1, *array_expr->index->result, elem_size_op);
             code.push_back(tacGen.getCode().back());
 
             // result = array + t1 (this is the address we want!)
-            TACOperand temp = tacGen.newTemp();
+            TACOperand temp = tacGen.newTemp(type);
             result = new TACOperand(temp);
             tacGen.emit(TAC_ADD, *result, *array_expr->array->result, t1);
             code.push_back(tacGen.getCode().back());
@@ -1295,7 +1387,7 @@ void UnaryExpression::generate_tac()
 
         // TAC Generation
         code = expr->code;
-        TACOperand temp = tacGen.newTemp();
+        TACOperand temp = tacGen.newTemp(type);
         result = new TACOperand(temp);
         tacGen.emit(TAC_ADDR_OF, *result, *expr->result);
         code.push_back(tacGen.getCode().back());
@@ -1341,7 +1433,7 @@ void UnaryExpression::generate_tac()
 
         // TAC Generation
         code = expr->code;
-        TACOperand temp = tacGen.newTemp();
+        TACOperand temp = tacGen.newTemp(type);
         result = new TACOperand(temp);
         tacGen.emit(TAC_DEREF, *result, *expr->result);
         code.push_back(tacGen.getCode().back());
@@ -1468,7 +1560,7 @@ void UnaryExpression::generate_tac()
     else
     {
         // Regular unary operations: create new temporary
-        TACOperand temp = tacGen.newTemp();
+        TACOperand temp = tacGen.newTemp(type);
         result = new TACOperand(temp);
 
         // Emit the operation
@@ -1524,7 +1616,7 @@ void PostfixExpression::generate_tac()
     }
 
     // STEP 3: Save old value to temporary (this is what makes it postfix!)
-    TACOperand old_value = tacGen.newTemp();
+    TACOperand old_value = tacGen.newTemp(type);
     tacGen.emit(TAC_ASSIGN, old_value, *expr->result, TACOperand());
     code.push_back(tacGen.getCode().back());
 
@@ -1536,7 +1628,7 @@ void PostfixExpression::generate_tac()
         TACOperand size_operand(TACOperand::OPERAND_CONSTANT, std::to_string(elem_size));
         TACOp add_or_sub = (op == TAC_POST_INC) ? TAC_ADD : TAC_SUB;
 
-        TACOperand temp = tacGen.newTemp();
+        TACOperand temp = tacGen.newTemp(type);
         tacGen.emit(add_or_sub, temp, *expr->result, size_operand);
         code.push_back(tacGen.getCode().back());
 
@@ -1685,7 +1777,9 @@ void AssignmentExpression::generate_tac()
         // 1. Calculate member address: this + offset
         TACOperand this_ptr(TACOperand::OPERAND_IDENTIFIER, "param_0");
         TACOperand offset_operand(TACOperand::OPERAND_CONSTANT, std::to_string(member_offset));
-        TACOperand addr_temp = tacGen.newTemp();
+        Type *ptr_type = new Type(TYPE_INT);
+        ptr_type->pointer_level = 1;
+        TACOperand addr_temp = tacGen.newTemp(ptr_type);
         tacGen.emit(TAC_ADD, addr_temp, this_ptr, offset_operand);
         code.push_back(tacGen.getCode().back());
 
@@ -1709,12 +1803,47 @@ void AssignmentExpression::generate_tac()
         string mangled_lhs = mangle_for_tac(lhs_name, sym);
         TACOperand lhs(TACOperand::OPERAND_IDENTIFIER, mangled_lhs);
 
-        // Emit assignment
-        tacGen.emit(TAC_ASSIGN, lhs, *rhs->result);
-        code.push_back(tacGen.getCode().back());
+        // Handle boolean expressions with truelist/falselist from backpatching
+        if (!rhs->truelist.empty() || !rhs->falselist.empty())
+        {
+            // Boolean expression in assignment context needs special handling
+            // Backpatch truelist to assign 1 (true), falselist to assign 0 (false)
 
-        // Result is the LHS
-        result = new TACOperand(lhs);
+            TACOperand true_val(TACOperand::OPERAND_CONSTANT, "1");
+            TACOperand false_val(TACOperand::OPERAND_CONSTANT, "0");
+
+            // Backpatch truelist to location where we assign true
+            int true_label = tacGen.nextinstr();
+            backpatch(rhs->truelist, true_label);
+            tacGen.emit(TAC_ASSIGN, lhs, true_val);
+            code.push_back(tacGen.getCode().back());
+
+            // Jump over false assignment
+            int skip_false = tacGen.emit(TAC_GOTO, TACOperand(), TACOperand());
+            code.push_back(tacGen.getCode().back());
+
+            // Backpatch falselist to location where we assign false
+            int false_label = tacGen.nextinstr();
+            backpatch(rhs->falselist, false_label);
+            tacGen.emit(TAC_ASSIGN, lhs, false_val);
+            code.push_back(tacGen.getCode().back());
+
+            // Backpatch skip jump to after false assignment
+            int after_label = tacGen.nextinstr();
+            tacGen.getCode()[skip_false]->target_line = after_label;
+
+            // Result is the LHS
+            result = new TACOperand(lhs);
+        }
+        else
+        {
+            // Normal assignment without truelist/falselist
+            tacGen.emit(TAC_ASSIGN, lhs, *rhs->result);
+            code.push_back(tacGen.getCode().back());
+
+            // Result is the LHS
+            result = new TACOperand(lhs);
+        }
     }
 }
 
@@ -2171,26 +2300,31 @@ void ArrayAccessExpression::generate_tac()
     // BUT: If result is still an array, don't dereference (just return address)
 
     // Step 1: t1 = index * elem_size
-    TACOperand t1 = tacGen.newTemp();
+    Type *int_type = new Type(TYPE_INT);
+    TACOperand t1 = tacGen.newTemp(int_type);
     TACOperand elem_size_op(TACOperand::OPERAND_CONSTANT, std::to_string(elem_size));
     tacGen.emit(TAC_MUL, t1, *index->result, elem_size_op);
     code.push_back(tacGen.getCode().back());
 
     // Step 2: t2 = array + t1 (calculate address)
-    TACOperand t2 = tacGen.newTemp();
+    Type *ptr_type = new Type(*array->type);
+    TACOperand t2 = tacGen.newTemp(ptr_type);
     tacGen.emit(TAC_ADD, t2, *array->result, t1);
     code.push_back(tacGen.getCode().back());
 
-    // Step 3: Dereference ONLY if result is a scalar (not an array)
-    if (type->is_array || type->pointer_level > 0)
+    // Step 3: Dereference to get the value, UNLESS result is an array
+    // Arrays don't get dereferenced because they decay to pointers
+    // But pointers DO get dereferenced to get the pointer value
+    if (type->is_array)
     {
-        // Result is still an array or pointer - just return the address
+        // Result is an array - return address without dereferencing
+        // (array will decay to pointer when used)
         result = new TACOperand(t2);
     }
     else
     {
-        // Result is a scalar - dereference to get the value
-        TACOperand t3 = tacGen.newTemp();
+        // Result is a scalar or pointer - dereference to get the value
+        TACOperand t3 = tacGen.newTemp(type);
         result = new TACOperand(t3);
         tacGen.emit(TAC_DEREF, *result, t2);
         code.push_back(tacGen.getCode().back());
@@ -2293,10 +2427,104 @@ void CallExpression::generate_tac()
             argTypes.push_back(Type(TYPE_ERROR));
     }
 
+    // Check if we're inside a method and this could be an implicit method call
+    MethodSignature *method_match = nullptr;
+    if (current_method_signature != nullptr)
+    {
+        // We're inside a method, check if func_name is a method of the current class
+        std::string current_class_name = current_method_signature->class_name;
+        method_match = find_method_match(current_class_name, func_name, argTypes);
+
+        if (method_match)
+        {
+            // Check method access permissions for implicit method call
+            AccessLevel method_access = method_match->access_level;
+            // For implicit calls, we're always inside the same class, so all access levels should be allowed
+            // But let's still implement the check for consistency
+            bool inside_same_class = true; // We know we're inside the same class for implicit calls
+
+            if (method_access != ACCESS_PUBLIC && !inside_same_class)
+            {
+                const char *access_str = (method_access == ACCESS_PRIVATE) ? "private" : "protected";
+                SEM_ERROR(line_no, "Cannot access %s method '%s' from current context",
+                          access_str, func_name.c_str());
+                semantic_error_count++;
+                type = new Type(TYPE_ERROR);
+                return;
+            }
+
+            if (debug)
+            {
+                printf("[CallExpression] Converting bare call '%s' to implicit method call in class '%s'\n",
+                       func_name.c_str(), current_class_name.c_str());
+            }
+
+            // This is an implicit method call - emit like MethodCallExpression but with implicit 'this'
+
+            // Create implicit 'this' parameter (address of current object)
+            // The current object is always param_0 in any method
+            TACOperand this_param(TACOperand::OPERAND_IDENTIFIER, "param_0");
+
+            // Emit 'this' as first parameter
+            tacGen.emit(TAC_PARAM, TACOperand(), this_param);
+            code.push_back(tacGen.getCode().back());
+
+            // Emit parameters for user arguments
+            for (auto *e : args)
+            {
+                tacGen.emit(TAC_PARAM, TACOperand(), *e->result);
+                code.push_back(tacGen.getCode().back());
+            }
+
+            // Emit call to mangled method name
+            TACOperand methodOp(TACOperand::OPERAND_LABEL, method_match->mangled_name);
+            TACOperand nParams(TACOperand::OPERAND_CONSTANT, std::to_string(args.size() + 1)); // +1 for 'this'
+
+            // Set return type and emit call
+            if (method_match->returnType.base_type != TYPE_VOID)
+            {
+                Type *ret_type = new Type(method_match->returnType);
+                TACOperand temp = tacGen.newTemp(ret_type);
+                result = new TACOperand(temp);
+                tacGen.emit(TAC_CALL, *result, methodOp, nParams);
+                code.push_back(tacGen.getCode().back());
+                type = ret_type;
+            }
+            else
+            {
+                result = new TACOperand();
+                tacGen.emit(TAC_CALL, TACOperand(), methodOp, nParams);
+                code.push_back(tacGen.getCode().back());
+                type = new Type(TYPE_VOID);
+            }
+            return; // Early return for method call
+        }
+    }
+
+    // Not an implicit method call, try regular function call
     int match = find_function_match(func_name, argTypes);
     if (match < 0)
     {
-        SEM_ERROR(line_no, "No matching function '%s' for given argument types", func_name.c_str());
+        // Check if this might be a method call made outside of a class context
+        bool could_be_method = false;
+        for (const auto &method_sig : method_signatures)
+        {
+            if (method_sig.method_name == func_name)
+            {
+                could_be_method = true;
+                break;
+            }
+        }
+
+        if (could_be_method && current_method_signature == nullptr)
+        {
+            SEM_ERROR(line_no, "Method '%s' can only be called from within a class method context, or use obj.%s() syntax",
+                      func_name.c_str(), func_name.c_str());
+        }
+        else
+        {
+            SEM_ERROR(line_no, "No matching function '%s' for given argument types", func_name.c_str());
+        }
         semantic_error_count++;
         type = new Type(TYPE_ERROR);
         // Still emit params and a call to keep TAC flow, with no result
@@ -2322,11 +2550,12 @@ void CallExpression::generate_tac()
     Type retT = (match >= 0) ? function_signatures[match].returnType : Type(TYPE_ERROR);
     if (retT.base_type != TYPE_VOID)
     {
-        TACOperand temp = tacGen.newTemp();
+        Type *ret_type = new Type(retT);
+        TACOperand temp = tacGen.newTemp(ret_type);
         result = new TACOperand(temp);
         tacGen.emit(TAC_CALL, *result, funcOp, nArgs);
         code.push_back(tacGen.getCode().back());
-        type = new Type(retT);
+        type = ret_type;
     }
     else
     {
@@ -2435,10 +2664,26 @@ void MethodCallExpression::generate_tac()
         return;
     }
 
+    // 4.5. Check method access permissions
+    AccessLevel method_access = method->access_level;
+    bool inside_same_class = (current_method_signature && current_method_signature->class_name == class_name);
+
+    if (method_access != ACCESS_PUBLIC && !inside_same_class)
+    {
+        const char *access_str = (method_access == ACCESS_PRIVATE) ? "private" : "protected";
+        SEM_ERROR(line_no, "Cannot access %s method '%s::%s'",
+                  access_str, class_name.c_str(), method_name.c_str());
+        semantic_error_count++;
+        type = new Type(TYPE_ERROR);
+        return;
+    }
+
     // 5. Type checking passed - emit TAC
 
     // First parameter is address of object (this pointer)
-    TACOperand object_addr = tacGen.newTemp();
+    Type *ptr_type = new Type(*object->type);
+    ptr_type->pointer_level++;
+    TACOperand object_addr = tacGen.newTemp(ptr_type);
     tacGen.emit(TAC_ADDR_OF, object_addr, *object->result, TACOperand());
     code.push_back(tacGen.getCode().back());
 
@@ -2459,11 +2704,12 @@ void MethodCallExpression::generate_tac()
     // Set return type and emit call
     if (method->returnType.base_type != TYPE_VOID)
     {
-        TACOperand temp = tacGen.newTemp();
+        Type *ret_type = new Type(method->returnType);
+        TACOperand temp = tacGen.newTemp(ret_type);
         result = new TACOperand(temp);
         tacGen.emit(TAC_CALL, *result, methodOp, nParams);
         code.push_back(tacGen.getCode().back());
-        type = new Type(method->returnType);
+        type = ret_type;
     }
     else
     {
@@ -2591,13 +2837,15 @@ void MemberAccessExpression::generate_tac()
 
         // Generate TAC: compute address of member
         TACOperand offset_op(TACOperand::OPERAND_CONSTANT, std::to_string(offset));
-        TACOperand addr_temp = tacGen.newTemp();
+        Type *ptr_type = new Type(*member_type);
+        ptr_type->pointer_level++;
+        TACOperand addr_temp = tacGen.newTemp(ptr_type);
 
         // If struct_expr is a simple identifier, use address-of
         PrimaryExpression *prim = dynamic_cast<PrimaryExpression *>(struct_expr);
         if (prim && prim->prim_type == PrimaryExpression::PRIM_IDENTIFIER)
         {
-            TACOperand struct_addr = tacGen.newTemp();
+            TACOperand struct_addr = tacGen.newTemp(ptr_type);
             tacGen.emit(TAC_ADDR_OF, struct_addr, *struct_expr->result);
             code.push_back(tacGen.getCode().back());
 
@@ -2612,7 +2860,7 @@ void MemberAccessExpression::generate_tac()
         }
 
         // Load value from member address
-        result = new TACOperand(tacGen.newTemp());
+        result = new TACOperand(tacGen.newTemp(member_type));
         tacGen.emit(TAC_DEREF, *result, addr_temp);
         code.push_back(tacGen.getCode().back());
 
@@ -2657,13 +2905,15 @@ void MemberAccessExpression::generate_tac()
     // Generate TAC: compute address of member
     // For struct variable: base_addr + offset
     TACOperand offset_op(TACOperand::OPERAND_CONSTANT, std::to_string(offset));
-    TACOperand addr_temp = tacGen.newTemp();
+    Type *ptr_type = new Type(*member_type);
+    ptr_type->pointer_level++;
+    TACOperand addr_temp = tacGen.newTemp(ptr_type);
 
     // If struct_expr is a simple identifier, use address-of
     PrimaryExpression *prim = dynamic_cast<PrimaryExpression *>(struct_expr);
     if (prim && prim->prim_type == PrimaryExpression::PRIM_IDENTIFIER)
     {
-        TACOperand struct_addr = tacGen.newTemp();
+        TACOperand struct_addr = tacGen.newTemp(ptr_type);
         tacGen.emit(TAC_ADDR_OF, struct_addr, *struct_expr->result);
         code.push_back(tacGen.getCode().back());
 
@@ -2678,7 +2928,7 @@ void MemberAccessExpression::generate_tac()
     }
 
     // Load value from member address
-    result = new TACOperand(tacGen.newTemp());
+    result = new TACOperand(tacGen.newTemp(member_type));
     tacGen.emit(TAC_DEREF, *result, addr_temp);
     code.push_back(tacGen.getCode().back());
 
@@ -2771,18 +3021,22 @@ void MemberAccessPtrExpression::generate_tac()
         Type *member_type = ct->get_member_type(member_name);
 
         // Generate TAC: dereference pointer, then compute member address
-        TACOperand struct_addr = tacGen.newTemp();
+        Type *struct_type = new Type(*ptr_expr->type);
+        struct_type->pointer_level--;
+        TACOperand struct_addr = tacGen.newTemp(struct_type);
         tacGen.emit(TAC_DEREF, struct_addr, *ptr_expr->result);
         code.push_back(tacGen.getCode().back());
 
         // Add offset to get member address
         TACOperand offset_op(TACOperand::OPERAND_CONSTANT, std::to_string(offset));
-        TACOperand member_addr = tacGen.newTemp();
+        Type *ptr_type = new Type(*member_type);
+        ptr_type->pointer_level++;
+        TACOperand member_addr = tacGen.newTemp(ptr_type);
         tacGen.emit(TAC_ADD, member_addr, struct_addr, offset_op);
         code.push_back(tacGen.getCode().back());
 
         // Load value from member address
-        result = new TACOperand(tacGen.newTemp());
+        result = new TACOperand(tacGen.newTemp(member_type));
         tacGen.emit(TAC_DEREF, *result, member_addr);
         code.push_back(tacGen.getCode().back());
 
@@ -2826,18 +3080,22 @@ void MemberAccessPtrExpression::generate_tac()
 
     // Generate TAC: dereference pointer, then compute member address
     // ptr->member is equivalent to (*ptr).member
-    TACOperand struct_addr = tacGen.newTemp();
+    Type *struct_type = new Type(*ptr_expr->type);
+    struct_type->pointer_level--;
+    TACOperand struct_addr = tacGen.newTemp(struct_type);
     tacGen.emit(TAC_DEREF, struct_addr, *ptr_expr->result);
     code.push_back(tacGen.getCode().back());
 
     // Add offset to get member address
     TACOperand offset_op(TACOperand::OPERAND_CONSTANT, std::to_string(offset));
-    TACOperand member_addr = tacGen.newTemp();
+    Type *ptr_type = new Type(*member_type);
+    ptr_type->pointer_level++;
+    TACOperand member_addr = tacGen.newTemp(ptr_type);
     tacGen.emit(TAC_ADD, member_addr, struct_addr, offset_op);
     code.push_back(tacGen.getCode().back());
 
     // Load value from member address
-    result = new TACOperand(tacGen.newTemp());
+    result = new TACOperand(tacGen.newTemp(member_type));
     tacGen.emit(TAC_DEREF, *result, member_addr);
     code.push_back(tacGen.getCode().back());
 

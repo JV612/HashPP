@@ -215,10 +215,43 @@ void VariableDeclaration::generate_tac()
         Symbol *sym = inserted_symbol ? inserted_symbol : lookup_symbol(var_name);
         string mangled_name = sym ? mangle_for_tac(var_name, sym) : var_name;
 
-        // Generate assignment with mangled name: varname_scope
-        TACOperand lhs(TACOperand::OPERAND_IDENTIFIER, mangled_name);
-        tacGen.emit(TAC_ASSIGN, lhs, *initializer->result);
-        code.push_back(tacGen.getCode().back());
+        // Handle boolean expressions with truelist/falselist from backpatching
+        if (!initializer->truelist.empty() || !initializer->falselist.empty())
+        {
+            // Boolean expression in assignment context needs special handling
+            // Backpatch truelist to assign 1 (true), falselist to assign 0 (false)
+
+            TACOperand lhs(TACOperand::OPERAND_IDENTIFIER, mangled_name);
+            TACOperand true_val(TACOperand::OPERAND_CONSTANT, "1");
+            TACOperand false_val(TACOperand::OPERAND_CONSTANT, "0");
+
+            // Backpatch truelist to location where we assign true
+            int true_label = tacGen.nextinstr();
+            backpatch(initializer->truelist, true_label);
+            tacGen.emit(TAC_ASSIGN, lhs, true_val);
+            code.push_back(tacGen.getCode().back());
+
+            // Jump over false assignment
+            int skip_false = tacGen.emit(TAC_GOTO, TACOperand(), TACOperand());
+            code.push_back(tacGen.getCode().back());
+
+            // Backpatch falselist to location where we assign false
+            int false_label = tacGen.nextinstr();
+            backpatch(initializer->falselist, false_label);
+            tacGen.emit(TAC_ASSIGN, lhs, false_val);
+            code.push_back(tacGen.getCode().back());
+
+            // Backpatch skip jump to after false assignment
+            int after_label = tacGen.nextinstr();
+            tacGen.getCode()[skip_false]->target_line = after_label;
+        }
+        else
+        {
+            // Normal assignment without truelist/falselist
+            TACOperand lhs(TACOperand::OPERAND_IDENTIFIER, mangled_name);
+            tacGen.emit(TAC_ASSIGN, lhs, *initializer->result);
+            code.push_back(tacGen.getCode().back());
+        }
     }
 
     // Even without an explicit initializer, register non-pointer class locals
@@ -304,13 +337,16 @@ void VariableDeclaration::handle_array_initialization(ArrayInitializerExpression
         TACOperand element_size_op(TACOperand::OPERAND_CONSTANT, std::to_string(decl_type->get_size()));
 
         // offset = i * sizeof(element)
-        TACOperand offset_temp = tacGen.newTemp();
+        Type *int_type = new Type(TYPE_INT);
+        TACOperand offset_temp = tacGen.newTemp(int_type);
         tacGen.emit(TAC_MUL, offset_temp, index_op, element_size_op);
         code.push_back(tacGen.getCode().back());
 
         // addr = base + offset
         TACOperand base_op(TACOperand::OPERAND_IDENTIFIER, base_name);
-        TACOperand addr_temp = tacGen.newTemp();
+        Type *ptr_type = new Type(*decl_type);
+        ptr_type->pointer_level++;
+        TACOperand addr_temp = tacGen.newTemp(ptr_type);
         tacGen.emit(TAC_ADD, addr_temp, base_op, offset_temp);
         code.push_back(tacGen.getCode().back());
 

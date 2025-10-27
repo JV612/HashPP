@@ -565,6 +565,7 @@ void ForStatement::generate_tac()
     // Generate post, goto M1
     // S.nextlist = B.falselist (exit)
     // ========================================================================
+    // NOTE: Scope management is handled in the parser (ansic.y)
 
     // Generate initialization
     if (init)
@@ -1011,14 +1012,13 @@ void SwitchStatement::collect_labels(Statement *stmt)
 
     if (CaseLabel *case_label = dynamic_cast<CaseLabel *>(stmt))
     {
-        // Found a case label - check for duplicates
+        // Found a case label - extract constant value once and cache it
         int case_value = extract_constant_value(case_label->case_value);
 
-        // Check if this case value already exists
+        // Check if this case value already exists (using cached values)
         for (const auto &existing_case : case_labels)
         {
-            int existing_value = extract_constant_value(existing_case.first);
-            if (existing_value == case_value)
+            if (existing_case.constant_value == case_value)
             {
                 SEM_ERROR(case_label->line_no,
                           "Duplicate case value %d in switch statement", case_value);
@@ -1027,8 +1027,12 @@ void SwitchStatement::collect_labels(Statement *stmt)
             }
         }
 
-        // Add new case label (position will be updated during generate_tac)
-        case_labels.push_back({case_label->case_value, -1});
+        // Add new case label with cached constant value
+        CaseLabelInfo info;
+        info.expr = case_label->case_value;
+        info.constant_value = case_value;
+        info.label_position = -1; // Will be updated during generate_tac
+        case_labels.push_back(info);
     }
     else if (DefaultLabel *default_label_stmt = dynamic_cast<DefaultLabel *>(stmt))
     {
@@ -1060,7 +1064,7 @@ void SwitchStatement::collect_labels(Statement *stmt)
 int SwitchStatement::extract_constant_value(Expression *expr)
 {
     // Extract constant integer value from case expression
-    // This assumes the expression has already been type-checked
+    // Supports: literals, character constants, and simple constant expressions (e.g., -100, 3+5)
 
     if (!expr->result)
     {
@@ -1068,18 +1072,120 @@ int SwitchStatement::extract_constant_value(Expression *expr)
         expr->generate_tac();
     }
 
+    // Try to get value from result if it's a constant
     if (expr->result && expr->result->type == TACOperand::OPERAND_CONSTANT)
     {
+        std::string value_str = expr->result->name;
+
+        // Handle character literals: 'A', '\n', etc.
+        if (value_str.length() >= 3 && value_str[0] == '\'' && value_str[value_str.length() - 1] == '\'')
+        {
+            // Extract character from 'X' format
+            if (value_str.length() == 3)
+            {
+                // Simple char: 'A'
+                return (int)value_str[1];
+            }
+            else if (value_str.length() == 4 && value_str[1] == '\\')
+            {
+                // Escape sequence: '\n', '\t', etc.
+                char escape_char = value_str[2];
+                switch (escape_char)
+                {
+                case 'n':
+                    return (int)'\n';
+                case 't':
+                    return (int)'\t';
+                case 'r':
+                    return (int)'\r';
+                case 'b':
+                    return (int)'\b';
+                case 'f':
+                    return (int)'\f';
+                case 'v':
+                    return (int)'\v';
+                case '0':
+                    return (int)'\0';
+                case '\\':
+                    return (int)'\\';
+                case '\'':
+                    return (int)'\'';
+                case '\"':
+                    return (int)'\"';
+                default:
+                    return (int)escape_char;
+                }
+            }
+        }
+
+        // Handle integer literals (positive and negative)
         try
         {
-            return std::stoi(expr->result->name);
+            return std::stoi(value_str);
         }
         catch (...)
         {
-            SEM_ERROR(line_no, "Case value must be a constant integer");
+            SEM_ERROR(line_no, "Case value must be a constant integer or character");
             semantic_error_count++;
             return 0;
         }
+    }
+
+    // Handle simple constant expressions: -N, +N
+    // Check if this is a UnaryExpression with constant operand
+    UnaryExpression *unary_expr = dynamic_cast<UnaryExpression *>(expr);
+    if (unary_expr && unary_expr->expr)
+    {
+        // Try to get the operand's constant value
+        int operand_value = extract_constant_value(unary_expr->expr);
+
+        // Apply unary operator
+        if (unary_expr->op == TAC_UMINUS)
+        {
+            return -operand_value;
+        }
+        else if (unary_expr->op == TAC_UPLUS)
+        {
+            return operand_value;
+        }
+        else if (unary_expr->op == TAC_BITWISE_NOT)
+        {
+            return ~operand_value;
+        }
+        // For other unary ops, fall through to error
+    }
+
+    // Handle simple constant expressions: N + M, N - M, etc.
+    // This enables expressions like (1 + 2) in case labels
+    BinaryExpression *binary_expr = dynamic_cast<BinaryExpression *>(expr);
+    if (binary_expr && binary_expr->left && binary_expr->right)
+    {
+        // Try to get both operands' constant values
+        int left_value = extract_constant_value(binary_expr->left);
+        int right_value = extract_constant_value(binary_expr->right);
+
+        // Apply binary operator
+        if (binary_expr->op == TAC_ADD)
+            return left_value + right_value;
+        else if (binary_expr->op == TAC_SUB)
+            return left_value - right_value;
+        else if (binary_expr->op == TAC_MUL)
+            return left_value * right_value;
+        else if (binary_expr->op == TAC_DIV)
+            return left_value / right_value;
+        else if (binary_expr->op == TAC_MOD)
+            return left_value % right_value;
+        else if (binary_expr->op == TAC_BITWISE_AND)
+            return left_value & right_value;
+        else if (binary_expr->op == TAC_BITWISE_OR)
+            return left_value | right_value;
+        else if (binary_expr->op == TAC_BITWISE_XOR)
+            return left_value ^ right_value;
+        else if (binary_expr->op == TAC_LEFT_SHIFT)
+            return left_value << right_value;
+        else if (binary_expr->op == TAC_RIGHT_SHIFT)
+            return left_value >> right_value;
+        // For other binary ops, fall through to error
     }
 
     SEM_ERROR(line_no, "Case value must be a constant expression");
@@ -1161,7 +1267,8 @@ void SwitchStatement::generate_jump_table_dispatch(TACOperand switch_result,
 
     // STEP 1: Bounds check - if (x < min_val) goto default
     TACOperand min_op(TACOperand::OPERAND_CONSTANT, std::to_string(min_val));
-    TACOperand bounds_temp1 = tacGen.newTemp();
+    Type *bool_type = new Type(TYPE_BOOL);
+    TACOperand bounds_temp1 = tacGen.newTemp(bool_type);
     tacGen.emit(TAC_LT, bounds_temp1, switch_result, min_op);
     int bounds_check1 = tacGen.emit(TAC_IF_GOTO, TACOperand(), bounds_temp1);
     code.push_back(tacGen.getCode().back());
@@ -1169,14 +1276,15 @@ void SwitchStatement::generate_jump_table_dispatch(TACOperand switch_result,
 
     // STEP 2: Bounds check - if (x > max_val) goto default
     TACOperand max_op(TACOperand::OPERAND_CONSTANT, std::to_string(max_val));
-    TACOperand bounds_temp2 = tacGen.newTemp();
+    TACOperand bounds_temp2 = tacGen.newTemp(bool_type);
     tacGen.emit(TAC_GT, bounds_temp2, switch_result, max_op);
     int bounds_check2 = tacGen.emit(TAC_IF_GOTO, TACOperand(), bounds_temp2);
     code.push_back(tacGen.getCode().back());
     dispatch_instructions.push_back(bounds_check2);
 
     // STEP 3: Normalize to 0-based index: index = x - min_val
-    TACOperand index_temp = tacGen.newTemp();
+    Type *int_type = new Type(TYPE_INT);
+    TACOperand index_temp = tacGen.newTemp(int_type);
     tacGen.emit(TAC_SUB, index_temp, switch_result, min_op);
     code.push_back(tacGen.getCode().back());
 
@@ -1202,15 +1310,14 @@ void SwitchStatement::generate_sequential_dispatch(TACOperand switch_result,
 
     for (size_t i = 0; i < case_values.size(); i++)
     {
-        Expression *case_expr = case_labels[i].first;
-
-        // Evaluate case expression (should be constant)
-        case_expr->generate_tac();
-        code.insert(code.end(), case_expr->code.begin(), case_expr->code.end());
+        // Use the cached constant value directly instead of re-evaluating expression
+        int case_value = case_labels[i].constant_value;
+        TACOperand case_operand(TACOperand::OPERAND_CONSTANT, std::to_string(case_value));
 
         // Generate comparison: _t = switch_result == case_value
-        TACOperand temp = tacGen.newTemp();
-        tacGen.emit(TAC_EQ, temp, switch_result, *case_expr->result);
+        Type *bool_type = new Type(TYPE_BOOL);
+        TACOperand temp = tacGen.newTemp(bool_type);
+        tacGen.emit(TAC_EQ, temp, switch_result, case_operand);
         code.push_back(tacGen.getCode().back());
 
         // Generate conditional jump: if _t goto case_label
@@ -1292,11 +1399,11 @@ void SwitchStatement::generate_tac()
     TACOperand switch_result = *switch_expr->result;
 
     // STEP 4: Extract constant values from all cases and decide optimization strategy
+    // Use cached constant values instead of recalculating
     std::vector<int> case_values;
-    for (const auto &case_pair : case_labels)
+    for (const auto &case_info : case_labels)
     {
-        int value = extract_constant_value(case_pair.first);
-        case_values.push_back(value);
+        case_values.push_back(case_info.constant_value);
     }
 
     // Decide whether to use jump table or sequential dispatch

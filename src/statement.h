@@ -550,9 +550,17 @@ public:
     Expression *switch_expr; // The switch(expr) - must be integer type
     Statement *body;         // Body statement (usually CompoundStatement)
 
+    // Structure to hold case label information
+    struct CaseLabelInfo
+    {
+        Expression *expr;   // Original case expression
+        int constant_value; // Cached constant value (computed once)
+        int label_position; // TAC label position
+    };
+
     // Collected during body generation:
-    std::vector<std::pair<Expression *, int>> case_labels; // {case_value, label_position}
-    int default_label;                                     // Position of default label (-1 if no default)
+    std::vector<CaseLabelInfo> case_labels; // Case label information
+    int default_label;                      // Position of default label (-1 if no default)
 
     // Jump table optimization support:
     bool use_jump_table;                    // Whether to use jump table optimization

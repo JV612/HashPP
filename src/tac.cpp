@@ -246,11 +246,23 @@ TACGenerator::~TACGenerator()
     clear();
 }
 
-TACOperand TACGenerator::newTemp()
+TACOperand TACGenerator::newTemp(Type *type)
 {
     stringstream ss;
     ss << "_t" << temp_counter++;
-    return TACOperand(TACOperand::OPERAND_TEMP, ss.str());
+    string temp_name = ss.str();
+
+    // Store temporary in symbol table with its type
+    if (type != nullptr)
+    {
+        SymbolTable *scope = current_scope();
+        if (scope != nullptr)
+        {
+            scope->insert(temp_name, *type);
+        }
+    }
+
+    return TACOperand(TACOperand::OPERAND_TEMP, temp_name);
 }
 
 TACOperand TACGenerator::newLabel()

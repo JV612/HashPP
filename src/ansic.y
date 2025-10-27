@@ -2258,8 +2258,8 @@ compound_statement
         }
       '}'
         { 
-            /* Exit scope when closing brace - but keep symbols for TAC generation */
-            pop_scope();
+            /* Don't exit scope yet - TAC generation needs it */
+            /* Scope will be popped after generate_tac() in parent rule */
             $$ = create_compound_statement(@1.first_line, @1.first_column); 
         }
     | '{' 
@@ -2277,8 +2277,8 @@ compound_statement
         }
       statement_list '}'
         { 
-            /* Exit scope when closing brace - but keep symbols for TAC generation */
-            pop_scope();
+            /* Don't exit scope yet - TAC generation needs it */
+            /* Scope will be popped after generate_tac() in parent rule */
             $$ = $3;  /* Note: shifted by mid-rule action */ 
         }
     ;
@@ -2350,31 +2350,37 @@ iteration_statement
             }
             $$ = create_for_statement($3, cond, $5, $7, @1.first_line, @1.first_column); 
         }
-	| FOR '(' declaration expression_statement ')' statement
+	| FOR '(' push_for_scope declaration expression_statement ')' statement
         { 
             // Wrap declaration in DeclarationStatement
             // (symbol already inserted during declaration parsing for declarations with initializers)
-            Statement* init = $3 ? create_declaration_statement($3, @3.first_line, @3.first_column) : nullptr;
+            Statement* init = $4 ? create_declaration_statement($4, @4.first_line, @4.first_column) : nullptr;
             
             Expression* cond = nullptr;
-            if ($4) {
-                ExpressionStatement* expr_stmt = dynamic_cast<ExpressionStatement*>($4);
+            if ($5) {
+                ExpressionStatement* expr_stmt = dynamic_cast<ExpressionStatement*>($5);
                 if (expr_stmt) cond = expr_stmt->expr;
             }
-            $$ = create_for_statement(init, cond, nullptr, $6, @1.first_line, @1.first_column); 
+            $$ = create_for_statement(init, cond, nullptr, $7, @1.first_line, @1.first_column); 
+            
+            /* Exit scope after for statement is created */
+            pop_scope();
         }
-	| FOR '(' declaration expression_statement expression ')' statement
+	| FOR '(' push_for_scope declaration expression_statement expression ')' statement
         { 
             // Wrap declaration in DeclarationStatement
             // (symbol already inserted during declaration parsing for declarations with initializers)
-            Statement* init = $3 ? create_declaration_statement($3, @3.first_line, @3.first_column) : nullptr;
+            Statement* init = $4 ? create_declaration_statement($4, @4.first_line, @4.first_column) : nullptr;
             
             Expression* cond = nullptr;
-            if ($4) {
-                ExpressionStatement* expr_stmt = dynamic_cast<ExpressionStatement*>($4);
+            if ($5) {
+                ExpressionStatement* expr_stmt = dynamic_cast<ExpressionStatement*>($5);
                 if (expr_stmt) cond = expr_stmt->expr;
             }
-            $$ = create_for_statement(init, cond, $5, $7, @1.first_line, @1.first_column); 
+            $$ = create_for_statement(init, cond, $6, $8, @1.first_line, @1.first_column); 
+            
+            /* Exit scope after for statement is created */
+            pop_scope();
         }
 	;
 
@@ -2509,6 +2515,9 @@ function_definition
                 backpatch($4->nextlist, tacGen.nextinstr());
             }
             
+            /* Pop function scope after TAC generation (temporaries are in symbol table) */
+            pop_scope();
+            
             // Check for missing return statements
             if (!current_function_has_return) {
                 if (current_function_return_type.base_type == TYPE_VOID) {
@@ -2558,6 +2567,9 @@ function_definition
                 // Backpatch any remaining nextlist to end of function
                 backpatch($4->nextlist, tacGen.nextinstr());
             }
+            
+            /* Pop function scope after TAC generation (temporaries are in symbol table) */
+            pop_scope();
             
             // Check for missing return statements
             if (!current_function_has_return) {
@@ -2609,6 +2621,9 @@ function_definition
                 backpatch($3->nextlist, tacGen.nextinstr());
             }
             
+            /* Pop function scope after TAC generation (temporaries are in symbol table) */
+            pop_scope();
+            
             // Check for missing return statements
             if (!current_function_has_return) {
                 if (current_function_return_type.base_type == TYPE_VOID) {
@@ -2634,6 +2649,15 @@ function_definition
             // Clear header snapshot (not used here, but reset for safety)
             pending_function_header = false;
             pending_function_name.clear();
+        }
+    ;
+
+/* Helper non-terminal to push scope for for loops with declarations */
+push_for_scope
+    : /* empty */
+        {
+            /* Enter new scope for for loop - variables declared in init are scoped to the loop */
+            push_scope();
         }
     ;
 

@@ -134,8 +134,8 @@ public:
     TACGenerator() : temp_counter(0), label_counter(0) {}
     ~TACGenerator();
 
-    // Generate new temporary variable
-    TACOperand newTemp();
+    // Generate new temporary variable (with type, stored in symbol table)
+    TACOperand newTemp(class Type *type = nullptr);
 
     // Generate new label
     TACOperand newLabel();
