@@ -163,6 +163,9 @@ public:
     void emit_goto(const std::string &label_name, int instr_index);
     void finalize_labels();
 
+    // Register a label at current position without emitting an instruction
+    void register_label_at_current_position(const std::string &label_name);
+
     // Print TAC
     void print() const;
     void clear();

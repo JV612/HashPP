@@ -177,7 +177,10 @@ string TACInstruction::to_string() const
 
     // Control Flow
     case TAC_LABEL:
-        ss << result.to_string() << ":";
+        // Function and user labels should be displayed
+        if (!result.is_empty() && result.type == TACOperand::OPERAND_LABEL) {
+            ss << result.to_string() << ":";
+        }
         break;
 
     case TAC_GOTO:
@@ -249,7 +252,7 @@ TACGenerator::~TACGenerator()
 TACOperand TACGenerator::newTemp(Type *type)
 {
     stringstream ss;
-    ss << "_t" << temp_counter++;
+    ss << "$t" << temp_counter++;
     string temp_name = ss.str();
 
     // Store temporary in symbol table with its type
@@ -322,6 +325,24 @@ void TACGenerator::emit_goto(const std::string &label_name, int instr_index)
     else
     {
         label_patchlists[label_name].push_back(instr_index);
+    }
+}
+
+void TACGenerator::register_label_at_current_position(const std::string &label_name)
+{
+    // Register the label at the current instruction position (where the next instruction will be)
+    int current_pos = nextinstr();
+    label_positions[label_name] = current_pos;
+
+    // Backpatch any gotos waiting for this label
+    auto it = label_patchlists.find(label_name);
+    if (it != label_patchlists.end())
+    {
+        for (int idx : it->second)
+        {
+            code[idx]->target_line = current_pos;
+        }
+        label_patchlists.erase(it);
     }
 }
 

@@ -186,7 +186,72 @@ void VariableDeclaration::generate_tac()
             return;
         }
 
-        // Use unified type compatibility checking
+        // ========================================================================
+        // Reference initialization - special handling
+        // ========================================================================
+        if (decl_type->is_reference)
+        {
+            // References must be bound to lvalues (addressable objects)
+            // The initializer must be an lvalue (variable, array element, dereference, etc.)
+            // For now, we check if the initializer has an address we can take
+
+            // Type compatibility check (ignoring reference)
+            Type ref_base = *decl_type;
+            ref_base.is_reference = false;
+
+            if (!is_type_compatible(ref_base, *initializer->type, true))
+            {
+                SEM_ERROR(line_no,
+                          "Cannot bind reference '%s' of type %s to value of type %s",
+                          var_name.c_str(), decl_type->to_string().c_str(),
+                          initializer->type->to_string().c_str());
+                semantic_error_count++;
+                return;
+            }
+
+            // Generate TAC: reference is stored as a pointer to the referenced object
+            code = initializer->code;
+
+            Symbol *sym = inserted_symbol ? inserted_symbol : lookup_symbol(var_name);
+            string mangled_name = sym ? mangle_for_tac(var_name, sym) : var_name;
+
+            // For references, we store the ADDRESS of the initializer
+            // References are implemented as constant pointers under the hood
+            TACOperand lhs(TACOperand::OPERAND_IDENTIFIER, mangled_name);
+
+            // Take address of initializer (if it's an identifier, take its address)
+            if (initializer->result->type == TACOperand::OPERAND_IDENTIFIER)
+            {
+                // Store address of the identifier
+                TACOperand addr_temp = tacGen.newTemp();
+                tacGen.emit(TAC_ADDR_OF, addr_temp, *initializer->result);
+                code.push_back(tacGen.getCode().back());
+
+                tacGen.emit(TAC_ASSIGN, lhs, addr_temp);
+                code.push_back(tacGen.getCode().back());
+            }
+            else if (initializer->result->type == TACOperand::OPERAND_TEMP)
+            {
+                // For temporary values, we can't create references
+                // This is a semantic error, but we'll allow it for now with a warning
+                SEM_WARN(line_no,
+                         "Binding reference '%s' to temporary value (may result in undefined behavior)",
+                         var_name.c_str());
+
+                tacGen.emit(TAC_ASSIGN, lhs, *initializer->result);
+                code.push_back(tacGen.getCode().back());
+            }
+            else
+            {
+                // For other operand types, just assign directly
+                tacGen.emit(TAC_ASSIGN, lhs, *initializer->result);
+                code.push_back(tacGen.getCode().back());
+            }
+
+            return;
+        }
+
+        // Use unified type compatibility checking (for non-references)
         if (!is_type_compatible(*decl_type, *initializer->type, true))
         {
             SEM_ERROR(line_no,

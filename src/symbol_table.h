@@ -11,7 +11,7 @@
 enum PrimitiveType
 {
     TYPE_INT,
-    TYPE_FLOAT,
+    TYPE_DOUBLE,
     TYPE_CHAR,
     TYPE_BOOL,
     TYPE_VOID,
@@ -20,7 +20,8 @@ enum PrimitiveType
 };
 
 // Access control for class members and methods
-enum AccessLevel {
+enum AccessLevel
+{
     ACCESS_PUBLIC,
     ACCESS_PRIVATE,
     ACCESS_PROTECTED
@@ -56,9 +57,9 @@ int get_enum_member_value(const std::string &identifier);
 // ============================================================================
 // Forward Declarations
 // ============================================================================
-class Type; // Forward declaration for StructType
+class Type;             // Forward declaration for StructType
 struct MethodSignature; // Forward declaration for ClassType
-class ClassType; // Forward declaration
+class ClassType;        // Forward declaration
 
 // ============================================================================
 // Struct/Union Type Support
@@ -98,6 +99,15 @@ bool struct_exists_in_current_scope(const std::string &struct_name);
 extern StructType *current_struct;
 
 // ============================================================================
+// Typedef Support
+// ============================================================================
+
+// Helper functions for scope-aware typedef management
+void register_typedef_in_scope(const std::string &typedef_name, Type *actual_type);
+Type *lookup_typedef_in_scope(const std::string &typedef_name);
+bool typedef_exists_in_current_scope(const std::string &typedef_name);
+
+// ============================================================================
 // Class Type Support
 // ============================================================================
 
@@ -108,15 +118,15 @@ extern AccessLevel current_access_level;
 class ClassType
 {
 public:
-    std::string name;                                    // Name of the class (e.g., "Point")
-    std::vector<std::pair<std::string, Type *>> members; // Ordered list of data members (name, type)
-    std::unordered_map<std::string, int> member_offsets; // member_name -> byte offset
+    std::string name;                                           // Name of the class (e.g., "Point")
+    std::vector<std::pair<std::string, Type *>> members;        // Ordered list of data members (name, type)
+    std::unordered_map<std::string, int> member_offsets;        // member_name -> byte offset
     std::unordered_map<std::string, AccessLevel> member_access; // member_name -> access level
-    int total_size;                                      // Total size in bytes
-    
+    int total_size;                                             // Total size in bytes
+
     // Method support
-    std::vector<MethodSignature *> methods;              // List of methods in this class
-    
+    std::vector<MethodSignature *> methods; // List of methods in this class
+
     ClassType(const std::string &n) : name(n), total_size(0) {}
     ~ClassType()
     {
@@ -127,13 +137,13 @@ public:
         // Note: methods are managed by global method_signatures vector
     }
 
-    void add_member(const std::string &member_name, Type *member_type, int line, AccessLevel access = ACCESS_PUBLIC);
+    void add_member(const std::string &member_name, Type *member_type, int line, AccessLevel access = ACCESS_PRIVATE);
     int get_member_offset(const std::string &member_name) const;
     Type *get_member_type(const std::string &member_name) const;
     bool has_member(const std::string &member_name) const;
     AccessLevel get_member_access(const std::string &member_name) const;
     void finalize(); // Calculate offsets and total size (sequential layout)
-    
+
     // Method management
     void add_method(MethodSignature *method);
     bool has_method(const std::string &method_name) const;
@@ -159,6 +169,9 @@ public:
     int pointer_level; // 0 = not pointer, 1 = *, 2 = **, etc.
     bool is_const;
 
+    // Reference support
+    bool is_reference; // true if this is a reference type (e.g., int&)
+
     // Array support
     bool is_array;
     int array_dim;                // Number of dimensions (0 for non-array)
@@ -171,17 +184,17 @@ public:
     StructType *struct_type_ptr; // Direct pointer to the StructType (for scope-aware access)
 
     // Class support
-    bool is_class;               // true if this is a class type
-    std::string class_name;      // name of the class (e.g., "Point")
-    ClassType *class_type_ptr;   // Direct pointer to the ClassType (for scope-aware access)
+    bool is_class;             // true if this is a class type
+    std::string class_name;    // name of the class (e.g., "Point")
+    ClassType *class_type_ptr; // Direct pointer to the ClassType (for scope-aware access)
 
-    Type() : base_type(TYPE_ERROR), pointer_level(0), is_const(false),
-                         is_array(false), array_dim(0), is_struct(false), is_union(false), struct_type_ptr(nullptr),
-                         is_class(false), class_type_ptr(nullptr) {}
+    Type() : base_type(TYPE_ERROR), pointer_level(0), is_const(false), is_reference(false),
+             is_array(false), array_dim(0), is_struct(false), is_union(false), struct_type_ptr(nullptr),
+             is_class(false), class_type_ptr(nullptr) {}
     Type(PrimitiveType bt, int ptr = 0, bool c = false)
-        : base_type(bt), pointer_level(ptr), is_const(c),
-                    is_array(false), array_dim(0), is_struct(false), is_union(false), struct_type_ptr(nullptr),
-                    is_class(false), class_type_ptr(nullptr) {}
+        : base_type(bt), pointer_level(ptr), is_const(c), is_reference(false),
+          is_array(false), array_dim(0), is_struct(false), is_union(false), struct_type_ptr(nullptr),
+          is_class(false), class_type_ptr(nullptr) {}
 
     std::string to_string() const;
     int get_size() const;         // Size in bytes for a single element
@@ -228,6 +241,9 @@ private:
     // Class types for this scope
     std::unordered_map<std::string, ClassType *> class_types;
 
+    // Typedef registry for this scope
+    std::unordered_map<std::string, Type *> typedefs;
+
 public:
     int Scopelevel;   // scope level of SymbolTable
     int scopeCounter; // Monotonically increasing scope ID (never reused)
@@ -253,6 +269,10 @@ public:
     bool register_class(const std::string &name, ClassType *ct);
     ClassType *lookup_class_local(const std::string &name);
 
+    // Typedef operations (scope-local)
+    bool register_typedef(const std::string &name, Type *type);
+    Type *lookup_typedef_local(const std::string &name);
+
     // Utilities
     void print() const;
     int getCurrentScope() const { return Scopelevel; }
@@ -266,6 +286,9 @@ extern SymbolTable *globalSymbolTable;
 
 // Global unique scope id generator
 extern int next_scope_id;
+
+// Global map from scope ID to SymbolTable for codegen lookup
+extern std::unordered_map<int, SymbolTable *> scope_map;
 
 // Helper APIs for externalized scope management and lookups
 // - push a new scope whose parent is current top (if any); returns new current scope
@@ -297,7 +320,7 @@ extern bool current_function_has_return;
 // Global debug flags for controlling different types of debug output
 extern bool debug;          // Master debug flag
 extern bool function_debug; // Function signature printing
-extern bool method_debug;   // Method signature printing  
+extern bool method_debug;   // Method signature printing
 extern bool symbol_debug;   // Symbol table printing
 extern bool ast_debug;      // AST node printing
 
@@ -320,11 +343,11 @@ struct MethodSignature
     Type returnType;          // method return type
     int MethodID;             // unique method ID for overloading
     AccessLevel access_level; // access level (public/private/protected)
-    
+
     // Special method flags
-    bool is_constructor;      // true if this is a constructor
-    bool is_destructor;       // true if this is a destructor
-    
+    bool is_constructor; // true if this is a constructor
+    bool is_destructor;  // true if this is a destructor
+
     // Mangled name for TAC generation (includes class name + method name + signature)
     std::string mangled_name;
 };
@@ -350,16 +373,23 @@ extern MethodSignature *current_method_signature;
 FunctionSignature *register_function(const std::string &name, const std::vector<Type> &params, const Type &retType);
 
 // Register a method (class_name + method_name + params + return type)
-MethodSignature *register_method(const std::string &class_name, const std::string &method_name, 
-                                  const std::vector<Type> &params, const Type &retType, 
-                                  bool is_constructor = false, bool is_destructor = false, AccessLevel access = ACCESS_PUBLIC);
+MethodSignature *register_method(const std::string &class_name, const std::string &method_name,
+                                 const std::vector<Type> &params, const Type &retType,
+                                 bool is_constructor = false, bool is_destructor = false, AccessLevel access = ACCESS_PRIVATE);
 
 // Find function by name and arg type list; returns index or -1
 int find_function_match(const std::string &name, const std::vector<Type> &argTypes);
 
+// Find function for function call (allows implicit conversions, prioritizes exact match)
+int find_function_call_match(const std::string &name, const std::vector<Type> &argTypes);
+
 // Find method by class name, method name, and arg type list; returns pointer or nullptr
-MethodSignature *find_method_match(const std::string &class_name, const std::string &method_name, 
-                                     const std::vector<Type> &argTypes);
+MethodSignature *find_method_match(const std::string &class_name, const std::string &method_name,
+                                   const std::vector<Type> &argTypes);
+
+// Find method for method call (allows implicit conversions, prioritizes exact match)
+MethodSignature *find_method_call_match(const std::string &class_name, const std::string &method_name,
+                                        const std::vector<Type> &argTypes);
 
 void print_function_signatures();
 void print_method_signatures();
@@ -384,6 +414,6 @@ bool is_type_compatible(const Type &target_type, const Type &source_type, bool a
 bool should_warn_implicit_conversion(const Type &target_type, const Type &source_type);
 
 // Check if a type can be used in boolean context (if, while, for, logical operators)
-bool is_bool_compatible(const Type& type);
+bool is_bool_compatible(const Type &type);
 
 #endif // SYMBOL_TABLE_H

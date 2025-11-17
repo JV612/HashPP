@@ -8,11 +8,17 @@
 #include "statement.h"
 #include "declaration.h"
 #include "diagnostics.h"
+#include "riscv_codegen.h"
 
 int yylex(void);
 void yyerror(const char *s);
 extern int yylineno;
 extern int semantic_error_count;
+
+// Lexer type management functions (defined in tokenizer.lpp)
+extern void types_init(void);
+extern void types_free(void);
+extern void types_add_typedef(const char *name);
 
 static inline int diag_line(int line)
 {
@@ -40,8 +46,12 @@ int current_pointer_level = 0;
 bool current_is_array = false;
 std::vector<int> current_array_sizes;
 
+// Track if current declarator is a reference
+bool current_is_reference = false;
+
 // Track storage class for current declaration
 bool current_is_static = false;
+bool current_is_typedef = false;
 
 // Track current enum being parsed
 EnumType* current_enum = nullptr;
@@ -634,6 +644,7 @@ declaration
           // Reset current_type after declaration to avoid contamination
           current_type = Type(TYPE_ERROR);
           in_function_declaration = false;
+          current_is_typedef = false;  // Reset typedef flag
           $$ = nullptr;
       }
 	| declaration_specifiers init_declarator_list ';'
@@ -642,6 +653,7 @@ declaration
             // Reset after declaration
             current_type = Type(TYPE_ERROR);
             in_function_declaration = false;
+            current_is_typedef = false;  // Reset typedef flag
             $$ = $2; /* Return the last declarator from the list (for use in for-loops) */
         }
 	| class_specifier class_ctor_declarator_list ';'
@@ -650,6 +662,7 @@ declaration
             // Reset after declaration
             current_type = Type(TYPE_ERROR);
             in_function_declaration = false;
+            current_is_typedef = false;  // Reset typedef flag
             $$ = $2;
         }
 	;
@@ -724,6 +737,7 @@ class_ctor_declarator
               // Create type with pointer level from declarator
               Type* var_type = new Type(current_type);
               var_type->pointer_level = current_pointer_level;
+              var_type->is_reference = current_is_reference;
               var_type->is_array = current_is_array;
               var_type->array_dim = current_array_sizes.size();
               var_type->array_sizes = current_array_sizes;
@@ -737,6 +751,7 @@ class_ctor_declarator
 
               // Reset for next declarator
               current_pointer_level = 0;
+              current_is_reference = false;
               current_is_array = false;
               current_array_sizes.clear();
               current_is_static = false;
@@ -753,6 +768,7 @@ class_ctor_declarator
               // Must be a class type on the left (guaranteed in this production)
               Type* var_type = new Type(current_type);
               var_type->pointer_level = 0; // direct object
+              var_type->is_reference = false;
 
               VariableDeclaration* decl = create_variable_declaration(var_type, $1, nullptr);
               decl->insert_symbol();
@@ -770,6 +786,7 @@ class_ctor_declarator
 
               // Reset for next declarator
               current_pointer_level = 0;
+              current_is_reference = false;
               current_is_array = false;
               current_array_sizes.clear();
               current_is_static = false;
@@ -786,6 +803,7 @@ class_ctor_declarator
               // Build declaration first and insert symbol so the object is visible
               Type* var_type = new Type(current_type);
               var_type->pointer_level = 0; // direct object
+              var_type->is_reference = false;
 
               VariableDeclaration* decl = create_variable_declaration(var_type, $1, nullptr);
               decl->insert_symbol();
@@ -803,6 +821,7 @@ class_ctor_declarator
               // Cleanup and reset for next declarator
               delete $3;
               current_pointer_level = 0;
+              current_is_reference = false;
               current_is_array = false;
               current_array_sizes.clear();
               current_is_static = false;
@@ -816,78 +835,174 @@ init_declarator
 	: declarator {
           if ($1) {
               if(debug) printf("[Parser] Variable: %s\n", $1);
-              // Create type with pointer level from declarator
-              Type* var_type = new Type(current_type);
-              var_type->pointer_level = current_pointer_level;
-              var_type->is_array = current_is_array;
-              var_type->array_dim = current_array_sizes.size();
               
-              // Array sizes are already in correct order (left-to-right as declared)
-              var_type->array_sizes = current_array_sizes;
-              // If this is an array with unspecified size (e.g., int a[];) and
-              // there is no initializer, that's a semantic error in C.
-              if (var_type->is_array) {
-                  bool has_unspecified = false;
-                  for (int i = 0; i < (int)var_type->array_sizes.size(); ++i) {
-                      if (var_type->array_sizes[i] == 0) { has_unspecified = true; break; }
-                  }
-                  if (has_unspecified) {
-                      SEM_ERROR(yylineno, "Array size not specified for '%s'", $1);
+              // Check if this is a typedef declaration
+              if (current_is_typedef) {
+                  if (debug) printf("[Parser] Registering typedef '%s'\n", $1);
+                  
+                  // Create type with pointer level from declarator
+                  Type* typedef_type = new Type(current_type);
+                  typedef_type->pointer_level = current_pointer_level;
+                  typedef_type->is_reference = current_is_reference;
+                  typedef_type->is_array = current_is_array;
+                  typedef_type->array_dim = current_array_sizes.size();
+                  typedef_type->array_sizes = current_array_sizes;
+                  
+                  // Register the typedef in the symbol table
+                  register_typedef_in_scope($1, typedef_type);
+                  
+                  // Register in the lexer's type system so it becomes a TYPE_NAME token
+                  types_add_typedef($1);
+                  
+                  $$ = nullptr;  // Typedefs don't generate declarations
+                  
+                  // Reset for next declarator
+                  current_pointer_level = 0;
+                  current_is_reference = false;
+                  current_is_array = false;
+                  current_array_sizes.clear();
+                  current_is_typedef = false;
+              } else {
+                  // Regular variable declaration
+                  // Create type with pointer level from declarator
+                  Type* var_type = new Type(current_type);
+                  
+                  // Add declarator's pointer level to the base type's pointer level
+                  // (for typedefs like "typedef int* IntPtr; IntPtr* pp;" where pp is int**)
+                  var_type->pointer_level = current_type.pointer_level + current_pointer_level;
+                  
+                  // Set reference flag
+                  var_type->is_reference = current_is_reference;
+                  
+                  // Semantic check: References MUST be initialized
+                  if (current_is_reference) {
+                      SEM_ERROR(yylineno, "Reference '%s' must be initialized", $1);
                       semantic_error_count++;
-                      // Mark the variable type as an error to avoid cascading failures
-                      var_type->base_type = TYPE_ERROR;
-                      var_type->is_array = false;
-                      var_type->array_sizes.clear();
-                      var_type->array_dim = 0;
                   }
+                  
+                  // Handle array declarators
+                  if (current_is_array) {
+                      // If base type is already an array (from typedef), we need to combine dimensions
+                      if (current_type.is_array) {
+                          // Multidimensional array: typedef creates outer dims, declarator adds inner
+                          // e.g., "typedef int Row[5]; Row matrix[3];" creates int[3][5]
+                          var_type->is_array = true;
+                          var_type->array_sizes = current_array_sizes;  // Declarator dimensions first
+                          var_type->array_sizes.insert(var_type->array_sizes.end(),
+                                                       current_type.array_sizes.begin(),
+                                                       current_type.array_sizes.end());
+                          var_type->array_dim = var_type->array_sizes.size();
+                      } else {
+                          // Base type is not array, just use declarator's array info
+                          var_type->is_array = current_is_array;
+                          var_type->array_dim = current_array_sizes.size();
+                          var_type->array_sizes = current_array_sizes;
+                      }
+                  }
+                  // else: no array in declarator, keep base type's array info (already copied)
+                  // If this is an array with unspecified size (e.g., int a[];) and
+                  // there is no initializer, that's a semantic error in C.
+                  if (var_type->is_array) {
+                      bool has_unspecified = false;
+                      for (int i = 0; i < (int)var_type->array_sizes.size(); ++i) {
+                          if (var_type->array_sizes[i] == 0) { has_unspecified = true; break; }
+                      }
+                      if (has_unspecified) {
+                          SEM_ERROR(yylineno, "Array size not specified for '%s'", $1);
+                          semantic_error_count++;
+                          // Mark the variable type as an error to avoid cascading failures
+                          var_type->base_type = TYPE_ERROR;
+                          var_type->is_array = false;
+                          var_type->array_sizes.clear();
+                          var_type->array_dim = 0;
+                      }
+                  }
+                  
+                  VariableDeclaration* decl = create_variable_declaration(
+                      var_type,
+                      $1,
+                      nullptr
+                  );
+                  $$ = decl;
+                  
+                  // Reset for next declarator
+                  current_pointer_level = 0;
+                  current_is_reference = false;
+                  current_is_array = false;
+                  current_array_sizes.clear();
+                  current_is_static = false;
               }
-              
-              VariableDeclaration* decl = create_variable_declaration(
-                  var_type,
-                  $1,
-                  nullptr
-              );
-              $$ = decl;
-              
-              // Reset for next declarator
-              current_pointer_level = 0;
-              current_is_array = false;
-              current_array_sizes.clear();
-              current_is_static = false;
           } else {
               $$ = nullptr;
           }
       }
 	| declarator '=' initializer {
           if ($1) {
-              if(debug) printf("[Parser] Variable with initializer: %s\n", $1);
-              // Create type with pointer level from declarator
-              Type* var_type = new Type(current_type);
-              var_type->pointer_level = current_pointer_level;
-              var_type->is_array = current_is_array;
-              var_type->array_dim = current_array_sizes.size();
-              
-              // Array sizes are already in correct order (left-to-right as declared)
-              var_type->array_sizes = current_array_sizes;
-              
-              VariableDeclaration* decl = create_variable_declaration(
-                  var_type,
-                  $1,
-                  $3
-              );
-              
-              // Insert symbol immediately for declarations with initializers
-              // This is crucial for for-loop declarations like "for (int i = 0; ...)"
-              // where the variable needs to be visible in the condition expression
-              decl->insert_symbol();
-              
-              $$ = decl;
-              
-              // Reset for next declarator
-              current_pointer_level = 0;
-              current_is_array = false;
-              current_array_sizes.clear();
-              current_is_static = false;
+              // Typedefs cannot have initializers
+              if (current_is_typedef) {
+                  SEM_ERROR(@1.first_line, "Typedef '%s' cannot have an initializer", $1);
+                  semantic_error_count++;
+                  $$ = nullptr;
+                  current_is_typedef = false;
+                  current_pointer_level = 0;
+                  current_is_reference = false;
+                  current_is_array = false;
+                  current_array_sizes.clear();
+              } else {
+                  if(debug) printf("[Parser] Variable with initializer: %s\n", $1);
+                  
+                  // Semantic check: References MUST be initialized
+                  if (current_is_reference && !$3) {
+                      SEM_ERROR(@1.first_line, "Reference '%s' must be initialized", $1);
+                      semantic_error_count++;
+                  }
+                  
+                  // Create type with pointer level from declarator
+                  Type* var_type = new Type(current_type);
+                  
+                  // Add declarator's pointer level to the base type's pointer level
+                  var_type->pointer_level = current_type.pointer_level + current_pointer_level;
+                  
+                  // Set reference flag
+                  var_type->is_reference = current_is_reference;
+                  
+                  // Handle array declarators
+                  if (current_is_array) {
+                      if (current_type.is_array) {
+                          // Combine dimensions: declarator dims + typedef dims
+                          var_type->is_array = true;
+                          var_type->array_sizes = current_array_sizes;
+                          var_type->array_sizes.insert(var_type->array_sizes.end(),
+                                                       current_type.array_sizes.begin(),
+                                                       current_type.array_sizes.end());
+                          var_type->array_dim = var_type->array_sizes.size();
+                      } else {
+                          var_type->is_array = current_is_array;
+                          var_type->array_dim = current_array_sizes.size();
+                          var_type->array_sizes = current_array_sizes;
+                      }
+                  }
+                  
+                  VariableDeclaration* decl = create_variable_declaration(
+                      var_type,
+                      $1,
+                      $3
+                  );
+                  
+                  // Insert symbol immediately for declarations with initializers
+                  // This is crucial for for-loop declarations like "for (int i = 0; ...)"
+                  // where the variable needs to be visible in the condition expression
+                  decl->insert_symbol();
+                  
+                  $$ = decl;
+                  
+                  // Reset for next declarator
+                  current_pointer_level = 0;
+                  current_is_reference = false;
+                  current_is_array = false;
+                  current_array_sizes.clear();
+                  current_is_static = false;
+              }
           } else {
               $$ = nullptr;
           }
@@ -897,6 +1012,10 @@ init_declarator
 
 storage_class_specifier
 	: TYPEDEF
+        {
+            current_is_typedef = true;
+            if (debug) printf("[Parser] Found typedef storage class\n");
+        }
 	| STATIC
         {
             current_is_static = true;
@@ -922,8 +1041,8 @@ type_specifier
           $$ = new Type(TYPE_BOOL);
       }
     | DOUBLE { 
-          current_type = Type(TYPE_FLOAT);
-          $$ = new Type(TYPE_FLOAT);
+          current_type = Type(TYPE_DOUBLE);
+          $$ = new Type(TYPE_DOUBLE);
       }
     | SIGNED
     | UNSIGNED
@@ -936,7 +1055,22 @@ type_specifier
           current_type = Type(TYPE_ENUM);
           $$ = new Type(TYPE_ENUM);
       }
-    | TYPE_NAME
+    | TYPE_NAME {
+          // Look up the typedef and get its actual type
+          Type *typedef_type = lookup_typedef_in_scope($1);
+          if (typedef_type) {
+              current_type = *typedef_type;  // Copy the type
+              $$ = new Type(*typedef_type);
+              if (debug) printf("[Parser] Resolved typedef '%s' to type '%s'\n", 
+                                $1, typedef_type->to_string().c_str());
+          } else {
+              SEM_ERROR(@1.first_line, "Unknown type name '%s'", $1);
+              semantic_error_count++;
+              current_type = Type(TYPE_ERROR);
+              $$ = new Type(TYPE_ERROR);
+          }
+          free($1);
+      }
     | class_specifier
     ;
 
@@ -952,7 +1086,7 @@ class_specifier
               // Create new class type
               current_class = new ClassType($2);
               register_class_in_scope($2, current_class);
-              current_access_level = ACCESS_PUBLIC; // Classes start with public access
+              current_access_level = ACCESS_PRIVATE; // Classes start with private access by default
               class_finalized_for_methods = false;  // Reset flag for new class
               if (debug) printf("[CLASS] Created class '%s'\n", $2);
           }
@@ -1968,24 +2102,29 @@ declarator
         { 
             // Methods use their own separate tracking, so this is safe for functions
             pending_function_return_type = current_type;
-            pending_function_return_type.pointer_level = $1;
+            pending_function_return_type.pointer_level = current_type.pointer_level + $1;
             current_pointer_level = $1;
+            current_is_reference = false;  // Pointers are not references
             $$ = $2; 
         }
 	| direct_declarator               
         { 
             // Methods use their own separate tracking, so this is safe for functions
             pending_function_return_type = current_type;
-            pending_function_return_type.pointer_level = 0;
+            pending_function_return_type.pointer_level = current_type.pointer_level;
             current_pointer_level = 0;
+            current_is_reference = false;
             $$ = $1; 
         }
 	| '&' direct_declarator           
         { 
-            // Methods use their own separate tracking, so this is safe for functions
+            // Reference declarator: int& ref = x;
+            // References cannot have pointer level (no int&*, no int*&)
             pending_function_return_type = current_type;
-            pending_function_return_type.pointer_level = 0;
+            pending_function_return_type.pointer_level = current_type.pointer_level;
+            pending_function_return_type.is_reference = true;
             current_pointer_level = 0;
+            current_is_reference = true;
             $$ = $2; 
         }
 	;
@@ -2011,7 +2150,7 @@ direct_declarator
                 SEM_ERROR(@3.first_line, "Array dimension has no type information");
                 semantic_error_count++;
                 array_size = 1; // Safe default
-            } else if ($3->type->base_type == TYPE_FLOAT) {
+            } else if ($3->type->base_type == TYPE_DOUBLE) {
                 SEM_ERROR(@3.first_line, "Array dimension must be integer, not float");
                 semantic_error_count++;
                 array_size = 1; // Safe default
@@ -2433,8 +2572,8 @@ external_declaration
 function_definition
     : declaration_specifiers declarator declaration_list
         {
-            current_function_return_type = backup_current_type;
-            current_function_return_type.pointer_level = current_pointer_level;
+            // Use pending_function_return_type which has the correct pointer level from declarator
+            current_function_return_type = pending_function_return_type;
             
             if(debug) printf("\n[DEBUG] Function return type: %s (contaminated current_type: %s)\n", 
                 current_function_return_type.to_string().c_str(), current_type.to_string().c_str());
@@ -2487,8 +2626,8 @@ function_definition
         }
     | declaration_specifiers declarator
         {
-            current_function_return_type = backup_current_type;
-            current_function_return_type.pointer_level = current_pointer_level;
+            // Use pending_function_return_type which has the correct pointer level from declarator
+            current_function_return_type = pending_function_return_type;
             
             if(debug) printf("\n[DEBUG] Function return type: %s (contaminated current_type: %s)\n", 
                 current_function_return_type.to_string().c_str(), current_type.to_string().c_str());
@@ -2673,20 +2812,12 @@ void yyerror(const char *s) {
 
 int main(int argc, char *argv[]) {
 
-    // Initialize global symbol table for global variables
+    // Initialize the lexer's type tracking system
+    types_init();
+    
     init_global_symbol_table();
 
-    // Don't push any scope initially - global variables go into globalSymbolTable
-    // Local scopes will be pushed when entering functions/compound statements
-
-    // Register built-in I/O functions in global scope
     register_builtin_io_functions();
-
-    if(debug) {
-        printf("\n========================================\n");
-        printf("       HashPP - Just a Compiler           \n");
-        printf("========================================\n\n");
-    }
     
     if (argc > 1) {
         FILE *file = fopen(argv[1], "r");
@@ -2701,14 +2832,7 @@ int main(int argc, char *argv[]) {
     int parse_ok = (yyparse() == 0);
 
     if (parse_ok && semantic_error_count == 0) {
-        printf("\nâœ“ Parsing successful!\n");
-        // Print global symbol table for debugging
-        if (symbol_debug) {
-            if (SymbolTable* gst = get_global_symbol_table()) {
-                printf("\n[Global Symbol Table]\n");
-                gst->print();
-            }
-        }
+        printf("\n Good Job !! Three Address Code Generated ! \n");
 
         if(function_debug) print_function_signatures();
         
@@ -2717,46 +2841,18 @@ int main(int argc, char *argv[]) {
 
         tacGen.print();
         
+        // Generate RISC-V assembly
+        printf("\n========== Generating RISC-V Assembly ==========\n");
+        RISCVCodeGenerator riscv_gen("output.s");
+        riscv_gen.generate(tacGen.getCode());
+        printf("\nRISC-V assembly written to output.s\n");
+        
         return 0;
     } else {
         if (semantic_error_count > 0) {
             report_diagnostic(DiagnosticLevel::Error, DiagnosticStage::Semantic, -1, "Semantic errors: %d", semantic_error_count);
         }
-        printf("\nâœ— Parsing failed!\n");
+        printf("\n Sorry !! Your Program isn't that Correct! \n");
         return 1;
     }
 }
-
-// ============================================================================
-// *** COMPREHENSIVE GUIDE: AST and TAC Integration ***
-// ============================================================================
-//
-// This file has been annotated to show where AST/TAC code should be added.
-// Look for comments marked with "*** TO USE AST: ***" throughout the file.
-//
-// QUICK START:
-// ============
-// 1. All necessary headers are already included at the top
-// 2. %union has Expression* and Declaration* types added
-// 3. Grammar rules have commented examples showing AST node creation
-// 4. Just uncomment the marked sections to enable AST/TAC!
-//
-// WHAT'S AVAILABLE:
-// ==================
-// - Symbol Table: symbolTable (SymbolTable class)
-// - TAC Generator: tacGen (TACGenerator class)
-// - Current Type: current_type (Type object)
-//
-// AST NODE TYPES:
-// ===============
-// - Expression nodes: PrimaryExpression, BinaryExpression, UnaryExpression
-// - Declaration nodes: VariableDeclaration
-//
-// TAC OPERATORS:
-// ==============
-// - Arithmetic: TAC_ADD, TAC_SUB, TAC_MUL, TAC_DIV, TAC_MOD
-// - Unary: TAC_UMINUS, TAC_UPLUS
-// - Assignment: TAC_ASSIGN
-//
-// See grammar rules above for detailed examples at each integration point.
-// ============================================================================

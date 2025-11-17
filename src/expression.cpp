@@ -271,8 +271,36 @@ void PrimaryExpression::generate_tac()
         {
             // Use mangled name with scope: name_scope
             string mangled_name = mangle_for_tac(name, sym);
-            result = new TACOperand(TACOperand::OPERAND_IDENTIFIER, mangled_name);
-            type = new Type(sym->type);
+
+            // Handle references: automatically dereference them
+            if (sym->type.is_reference)
+            {
+                // References are stored as pointers, so we need to dereference
+                // Generate: temp = *reference_var
+                TACOperand ref_ptr(TACOperand::OPERAND_IDENTIFIER, mangled_name);
+
+                // Create the type without the reference flag
+                Type *deref_type = new Type(sym->type);
+                deref_type->is_reference = false;
+
+                TACOperand deref_temp = tacGen.newTemp(deref_type);
+                tacGen.emit(TAC_DEREF, deref_temp, ref_ptr, TACOperand());
+                code.push_back(tacGen.getCode().back());
+
+                result = new TACOperand(deref_temp);
+                type = deref_type;
+
+                if (debug)
+                {
+                    cout << "[AST] Auto-dereferencing reference: " << name << endl;
+                }
+            }
+            else
+            {
+                // Normal variable access
+                result = new TACOperand(TACOperand::OPERAND_IDENTIFIER, mangled_name);
+                type = new Type(sym->type);
+            }
         }
         break;
     }
@@ -318,7 +346,7 @@ void PrimaryExpression::generate_tac()
     case PRIM_FLOAT_CONSTANT:
     {
         result = new TACOperand(TACOperand::OPERAND_CONSTANT, std::to_string(float_value));
-        type = new Type(TYPE_FLOAT);
+        type = new Type(TYPE_DOUBLE);
         if (debug)
         {
             cout << "[AST] Float constant: " << float_value << endl;
@@ -1803,6 +1831,24 @@ void AssignmentExpression::generate_tac()
         string mangled_lhs = mangle_for_tac(lhs_name, sym);
         TACOperand lhs(TACOperand::OPERAND_IDENTIFIER, mangled_lhs);
 
+        // Check if LHS is a reference - if so, we need to dereference it for assignment
+        if (sym->type.is_reference)
+        {
+            // References: need to store through the pointer
+            // Generate: *ref = rhs_value
+            tacGen.emit(TAC_DEREF_STORE, lhs, *rhs->result, TACOperand());
+            code.push_back(tacGen.getCode().back());
+
+            // Result is the LHS reference itself (for chained assignments)
+            result = new TACOperand(lhs);
+
+            if (debug)
+            {
+                cout << "[AST] Assignment through reference: " << lhs_name << endl;
+            }
+            return;
+        }
+
         // Handle boolean expressions with truelist/falselist from backpatching
         if (!rhs->truelist.empty() || !rhs->falselist.empty())
         {
@@ -2307,7 +2353,28 @@ void ArrayAccessExpression::generate_tac()
     code.push_back(tacGen.getCode().back());
 
     // Step 2: t2 = array + t1 (calculate address)
+    // When adding to an array, it decays to a pointer (increase pointer_level)
     Type *ptr_type = new Type(*array->type);
+    if (array->type->is_array)
+    {
+        // Array decays to pointer: increment pointer level
+        ptr_type->pointer_level++;
+        // Keep array info if multi-dimensional, otherwise it becomes a plain pointer
+        if (ptr_type->array_dim > 1)
+        {
+            ptr_type->array_dim--;
+            if (!ptr_type->array_sizes.empty())
+            {
+                ptr_type->array_sizes.erase(ptr_type->array_sizes.begin());
+            }
+        }
+        else
+        {
+            ptr_type->is_array = false;
+            ptr_type->array_dim = 0;
+            ptr_type->array_sizes.clear();
+        }
+    }
     TACOperand t2 = tacGen.newTemp(ptr_type);
     tacGen.emit(TAC_ADD, t2, *array->result, t1);
     code.push_back(tacGen.getCode().back());
@@ -2433,7 +2500,8 @@ void CallExpression::generate_tac()
     {
         // We're inside a method, check if func_name is a method of the current class
         std::string current_class_name = current_method_signature->class_name;
-        method_match = find_method_match(current_class_name, func_name, argTypes);
+        // For method calls, use find_method_call_match to allow implicit conversions
+        method_match = find_method_call_match(current_class_name, func_name, argTypes);
 
         if (method_match)
         {
@@ -2502,7 +2570,8 @@ void CallExpression::generate_tac()
     }
 
     // Not an implicit method call, try regular function call
-    int match = find_function_match(func_name, argTypes);
+    // For function calls, use find_function_call_match to allow implicit conversions
+    int match = find_function_call_match(func_name, argTypes);
     if (match < 0)
     {
         // Check if this might be a method call made outside of a class context
@@ -2643,7 +2712,8 @@ void MethodCallExpression::generate_tac()
     }
 
     // 4. Find matching method using overload resolution
-    MethodSignature *method = find_method_match(class_name, method_name, argTypes);
+    // For method calls, use find_method_call_match to allow implicit conversions
+    MethodSignature *method = find_method_call_match(class_name, method_name, argTypes);
     if (!method)
     {
         // Build argument type string for better error message

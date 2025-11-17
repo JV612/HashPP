@@ -7,6 +7,10 @@ using namespace std;
 
 extern int yylineno;
 
+// Lexer type scope management functions (defined in tokenizer.lpp)
+extern void types_enter_scope(void);
+extern void types_leave_scope(void);
+
 namespace
 {
     int effective_line(int line)
@@ -23,12 +27,15 @@ vector<SymbolTable *> symbolTableStack;
 SymbolTable *globalSymbolTable = nullptr;
 int next_scope_id = 0;
 
+// Global map from scope ID to SymbolTable for codegen lookup
+std::unordered_map<int, SymbolTable *> scope_map;
+
 int semantic_error_count = 0;
 bool current_function_has_return = false;
 bool debug = false;
 bool function_debug = false;
 bool method_debug = false;
-bool symbol_debug = true;
+bool symbol_debug = false; // Set to true to print symbol tables
 bool ast_debug = false;
 std::vector<FunctionSignature> function_signatures;
 FunctionSignature *current_function_signature = nullptr;
@@ -113,6 +120,27 @@ StructType *current_struct = nullptr;
 
 void StructType::add_member(const std::string &member_name, Type *member_type, int line)
 {
+    // Disallow direct member of same struct type inside its own definition
+    if (member_type)
+    {
+        if (member_type->is_struct && member_type->struct_name == name && !member_type->is_array && member_type->pointer_level == 0)
+        {
+            SEM_ERROR(line, "Invalid member '%s' of struct '%s' with same type inside its own definition",
+                      member_name.c_str(), name.c_str());
+            semantic_error_count++;
+            delete member_type;
+            return;
+        }
+        // Also if it's declared as a class type but struct name matches (defensive)
+        if (member_type->is_class && member_type->class_name == name && !member_type->is_array && member_type->pointer_level == 0)
+        {
+            SEM_ERROR(line, "Invalid member '%s' of struct '%s' with same class-type inside its own definition",
+                      member_name.c_str(), name.c_str());
+            semantic_error_count++;
+            delete member_type;
+            return;
+        }
+    }
     // Check for duplicate member names
     if (has_member(member_name))
     {
@@ -258,14 +286,100 @@ bool struct_exists_in_current_scope(const std::string &struct_name)
 }
 
 // ============================================================================
+// Typedef Support
+// ============================================================================
+
+void register_typedef_in_scope(const std::string &typedef_name, Type *actual_type)
+{
+    SymbolTable *scope = current_scope();
+    if (!scope)
+    {
+        // At global level, use global symbol table
+        scope = globalSymbolTable;
+        if (debug)
+            printf("[Typedef Registry] Registering '%s' in global scope\n", typedef_name.c_str());
+    }
+    else
+    {
+        if (debug)
+            printf("[Typedef Registry] Registering '%s' in scope %d\n", typedef_name.c_str(), scope->Scopelevel);
+    }
+    if (scope)
+    {
+        scope->register_typedef(typedef_name, actual_type);
+    }
+}
+
+Type *lookup_typedef_in_scope(const std::string &typedef_name)
+{
+    // Start from current scope and walk up to parent scopes
+    SymbolTable *scope = current_scope();
+    if (!scope)
+    {
+        // At global level, start with global symbol table
+        scope = globalSymbolTable;
+    }
+
+    while (scope)
+    {
+        Type *t = scope->lookup_typedef_local(typedef_name);
+        if (t)
+        {
+            return t;
+        }
+        scope = scope->Parent;
+    }
+
+    return nullptr;
+}
+
+bool typedef_exists_in_current_scope(const std::string &typedef_name)
+{
+    SymbolTable *scope = current_scope();
+    if (scope)
+    {
+        return scope->lookup_typedef_local(typedef_name) != nullptr;
+    }
+
+    // Check global scope if no current scope
+    if (globalSymbolTable)
+    {
+        return globalSymbolTable->lookup_typedef_local(typedef_name) != nullptr;
+    }
+
+    return false;
+}
+
+// ============================================================================
 // Class Type Support
 // ============================================================================
 
 ClassType *current_class = nullptr;
-AccessLevel current_access_level = ACCESS_PUBLIC;
+AccessLevel current_access_level = ACCESS_PRIVATE;
 
 void ClassType::add_member(const std::string &member_name, Type *member_type, int line, AccessLevel access)
 {
+    // Disallow direct member of same class type inside its own definition
+    if (member_type)
+    {
+        if (member_type->is_class && member_type->class_name == name && !member_type->is_array && member_type->pointer_level == 0)
+        {
+            SEM_ERROR(line, "Invalid member '%s' of class '%s' with same type inside its own definition",
+                      member_name.c_str(), name.c_str());
+            semantic_error_count++;
+            delete member_type;
+            return;
+        }
+        // Defensive: also prevent struct-typed member with same name
+        if (member_type->is_struct && member_type->struct_name == name && !member_type->is_array && member_type->pointer_level == 0)
+        {
+            SEM_ERROR(line, "Invalid member '%s' of class '%s' with same struct-type inside its own definition",
+                      member_name.c_str(), name.c_str());
+            semantic_error_count++;
+            delete member_type;
+            return;
+        }
+    }
     // Check for duplicate member names
     if (has_member(member_name))
     {
@@ -320,7 +434,7 @@ AccessLevel ClassType::get_member_access(const std::string &member_name) const
     {
         return it->second;
     }
-    return ACCESS_PUBLIC; // Default for safety
+    return ACCESS_PRIVATE; // Default for safety
 }
 
 void ClassType::finalize()
@@ -464,7 +578,7 @@ string Type::to_string() const
         case TYPE_INT:
             result += "int";
             break;
-        case TYPE_FLOAT:
+        case TYPE_DOUBLE:
             result += "float";
             break;
         case TYPE_CHAR:
@@ -490,6 +604,12 @@ string Type::to_string() const
         result += "*";
     }
 
+    // Add reference marker
+    if (is_reference)
+    {
+        result += "&";
+    }
+
     // Add array dimensions
     if (is_array)
     {
@@ -507,6 +627,11 @@ string Type::to_string() const
 
 int Type::get_size() const
 {
+    // References are implemented as pointers (8 bytes on 64-bit systems)
+    // but semantically behave like the referenced object
+    if (is_reference)
+        return 8;
+
     // Pointers are 8 bytes (64-bit)
     if (pointer_level > 0)
         return 8;
@@ -547,8 +672,8 @@ int Type::get_size() const
     {
     case TYPE_INT:
         return 4;
-    case TYPE_FLOAT:
-        return 4;
+    case TYPE_DOUBLE:
+        return 8;
     case TYPE_CHAR:
         return 1;
     case TYPE_BOOL:
@@ -658,7 +783,7 @@ bool Type::is_numeric() const
         return false;
 
     return base_type == TYPE_INT ||
-           base_type == TYPE_FLOAT ||
+           base_type == TYPE_DOUBLE ||
            base_type == TYPE_CHAR ||
            base_type == TYPE_BOOL ||
            base_type == TYPE_ENUM;
@@ -706,9 +831,9 @@ Type Type::promote_with(const Type &other) const
     }
 
     // Float takes precedence over everything
-    if (base_type == TYPE_FLOAT || other.base_type == TYPE_FLOAT)
+    if (base_type == TYPE_DOUBLE || other.base_type == TYPE_DOUBLE)
     {
-        return Type(TYPE_FLOAT);
+        return Type(TYPE_DOUBLE);
     }
 
     // Int takes precedence over char
@@ -751,6 +876,12 @@ SymbolTable::~SymbolTable()
     {
         delete pair.second;
     }
+
+    // Clean up all typedefs in this scope
+    for (auto &pair : typedefs)
+    {
+        delete pair.second;
+    }
 }
 
 bool SymbolTable::register_struct(const std::string &name, StructType *st)
@@ -789,6 +920,27 @@ ClassType *SymbolTable::lookup_class_local(const std::string &name)
 {
     auto it = class_types.find(name);
     if (it != class_types.end())
+    {
+        return it->second;
+    }
+    return nullptr;
+}
+
+bool SymbolTable::register_typedef(const std::string &name, Type *type)
+{
+    // Check if typedef already exists in THIS scope
+    if (typedefs.find(name) != typedefs.end())
+    {
+        return false; // Already exists
+    }
+    typedefs[name] = type;
+    return true;
+}
+
+Type *SymbolTable::lookup_typedef_local(const std::string &name)
+{
+    auto it = typedefs.find(name);
+    if (it != typedefs.end())
     {
         return it->second;
     }
@@ -882,6 +1034,13 @@ SymbolTable *push_scope(const std::string &functionName)
     child->Scopelevel = ++next_scope_id; // unique scope id
     child->FunctionName = functionName;
     symbolTableStack.push_back(child);
+
+    // Register this scope in the global scope map for codegen lookup
+    scope_map[child->Scopelevel] = child;
+
+    // Enter new scope in lexer's type system for typedef tracking
+    types_enter_scope();
+
     if (debug)
     {
         cout << "[Scope] Entered new scope " << child->Scopelevel
@@ -901,6 +1060,10 @@ void pop_scope()
     // Print the symbol table for the scope being popped
     top->print();
     symbolTableStack.pop_back();
+
+    // Leave scope in lexer's type system to clean up typedefs
+    types_leave_scope();
+
     // Do not delete 'top' so that symbols remain available for TAC
 }
 
@@ -968,6 +1131,10 @@ void init_global_symbol_table()
         globalSymbolTable = new SymbolTable();
         globalSymbolTable->Scopelevel = 0; // Global scope level
         globalSymbolTable->FunctionName = "Global";
+
+        // Register global scope in the scope map
+        scope_map[0] = globalSymbolTable;
+
         if (debug)
             cout << "[Global] Initialized global symbol table" << endl;
     }
@@ -1255,16 +1422,18 @@ bool is_type_compatible(const Type &target_type, const Type &source_type, bool a
         !target_type.is_struct && !source_type.is_struct &&
         !target_type.is_class && !source_type.is_class)
     {
-        // enum -> int, char, bool conversions
+        // enum -> int, char, bool, float conversions
         if (source_type.base_type == TYPE_ENUM &&
-            (target_type.base_type == TYPE_INT || target_type.base_type == TYPE_CHAR || target_type.base_type == TYPE_BOOL))
+            (target_type.base_type == TYPE_INT || target_type.base_type == TYPE_CHAR ||
+             target_type.base_type == TYPE_BOOL || target_type.base_type == TYPE_DOUBLE))
         {
             return true;
         }
 
-        // int, char -> enum conversions
+        // int, char, float -> enum conversions
         if (target_type.base_type == TYPE_ENUM &&
-            (source_type.base_type == TYPE_INT || source_type.base_type == TYPE_CHAR))
+            (source_type.base_type == TYPE_INT || source_type.base_type == TYPE_CHAR ||
+             source_type.base_type == TYPE_DOUBLE))
         {
             return true;
         }
@@ -1301,7 +1470,7 @@ bool should_warn_implicit_conversion(const Type &target_type, const Type &source
     {
         // Warn for potentially lossy conversions
         // float/double -> int (truncation)
-        if (source_type.base_type == TYPE_FLOAT && target_type.is_integer())
+        if (source_type.base_type == TYPE_DOUBLE && target_type.is_integer())
             return true;
 
         // Warn for any non-exact numeric type conversion
@@ -1315,16 +1484,18 @@ bool should_warn_implicit_conversion(const Type &target_type, const Type &source
         !target_type.is_struct && !source_type.is_struct &&
         !target_type.is_class && !source_type.is_class)
     {
-        // enum -> int/char/bool (warn about potential value range issues)
+        // enum -> int/char/bool/float (warn about potential value range issues)
         if (source_type.base_type == TYPE_ENUM &&
-            (target_type.base_type == TYPE_INT || target_type.base_type == TYPE_CHAR || target_type.base_type == TYPE_BOOL))
+            (target_type.base_type == TYPE_INT || target_type.base_type == TYPE_CHAR ||
+             target_type.base_type == TYPE_BOOL || target_type.base_type == TYPE_DOUBLE))
         {
             return true;
         }
 
-        // int/char -> enum (warn about potential invalid enum values)
+        // int/char/float -> enum (warn about potential invalid enum values)
         if (target_type.base_type == TYPE_ENUM &&
-            (source_type.base_type == TYPE_INT || source_type.base_type == TYPE_CHAR))
+            (source_type.base_type == TYPE_INT || source_type.base_type == TYPE_CHAR ||
+             source_type.base_type == TYPE_DOUBLE))
         {
             return true;
         }
@@ -1365,7 +1536,8 @@ int find_function_match(const std::string &name, const std::vector<Type> &argTyp
         bool ok = true;
         for (size_t j = 0; j < argTypes.size(); ++j)
         {
-            if (!type_compatible(fs.params[j], argTypes[j]))
+            // For function overloading, we need EXACT type match, not compatibility with implicit conversions
+            if (!is_type_compatible(fs.params[j], argTypes[j], false))
             {
                 ok = false;
                 break;
@@ -1373,6 +1545,57 @@ int find_function_match(const std::string &name, const std::vector<Type> &argTyp
         }
         if (ok)
             return (int)i;
+    }
+
+    return -1;
+}
+
+int find_function_call_match(const std::string &name, const std::vector<Type> &argTypes)
+{
+    // First pass: try to find exact match
+    for (size_t i = 0; i < function_signatures.size(); ++i)
+    {
+        const auto &fs = function_signatures[i];
+        if (fs.name != name)
+            continue;
+
+        if (fs.params.size() != argTypes.size())
+            continue;
+        bool ok = true;
+        for (size_t j = 0; j < argTypes.size(); ++j)
+        {
+            // Try exact match first
+            if (!is_type_compatible(fs.params[j], argTypes[j], false))
+            {
+                ok = false;
+                break;
+            }
+        }
+        if (ok)
+            return (int)i; // Exact match found
+    }
+
+    // Second pass: try to find compatible match with implicit conversions
+    for (size_t i = 0; i < function_signatures.size(); ++i)
+    {
+        const auto &fs = function_signatures[i];
+        if (fs.name != name)
+            continue;
+
+        if (fs.params.size() != argTypes.size())
+            continue;
+        bool ok = true;
+        for (size_t j = 0; j < argTypes.size(); ++j)
+        {
+            // Allow implicit conversions for function calls
+            if (!is_type_compatible(fs.params[j], argTypes[j], true))
+            {
+                ok = false;
+                break;
+            }
+        }
+        if (ok)
+            return (int)i; // Compatible match found
     }
 
     return -1;
@@ -1536,7 +1759,8 @@ MethodSignature *find_method_match(const std::string &class_name, const std::str
         bool ok = true;
         for (size_t j = 0; j < argTypes.size(); ++j)
         {
-            if (!type_compatible(ms.params[j], argTypes[j]))
+            // For method overloading, we need EXACT type match, not compatibility with implicit conversions
+            if (!is_type_compatible(ms.params[j], argTypes[j], false))
             {
                 ok = false;
                 break;
@@ -1544,6 +1768,58 @@ MethodSignature *find_method_match(const std::string &class_name, const std::str
         }
         if (ok)
             return &ms;
+    }
+
+    return nullptr;
+}
+
+MethodSignature *find_method_call_match(const std::string &class_name, const std::string &method_name,
+                                        const std::vector<Type> &argTypes)
+{
+    // First pass: try to find exact match
+    for (auto &ms : method_signatures)
+    {
+        if (ms.class_name != class_name || ms.method_name != method_name)
+            continue;
+
+        if (ms.params.size() != argTypes.size())
+            continue;
+
+        bool ok = true;
+        for (size_t j = 0; j < argTypes.size(); ++j)
+        {
+            // Try exact match first
+            if (!is_type_compatible(ms.params[j], argTypes[j], false))
+            {
+                ok = false;
+                break;
+            }
+        }
+        if (ok)
+            return &ms; // Exact match found
+    }
+
+    // Second pass: try to find compatible match with implicit conversions
+    for (auto &ms : method_signatures)
+    {
+        if (ms.class_name != class_name || ms.method_name != method_name)
+            continue;
+
+        if (ms.params.size() != argTypes.size())
+            continue;
+
+        bool ok = true;
+        for (size_t j = 0; j < argTypes.size(); ++j)
+        {
+            // Allow implicit conversions for method calls
+            if (!is_type_compatible(ms.params[j], argTypes[j], true))
+            {
+                ok = false;
+                break;
+            }
+        }
+        if (ok)
+            return &ms; // Compatible match found
     }
 
     return nullptr;
@@ -1616,30 +1892,40 @@ void SymbolTable::print() const
 
     if (table.empty())
     {
-        cout << "\n[Symbol Table is empty]\n"
+        cout << "\n[Symbol Table - Scope " << Scopelevel;
+        if (!FunctionName.empty())
+            cout << " (" << FunctionName << ")";
+        cout << " is empty]\n"
              << endl;
         return;
     }
 
-    cout << "\n========== SYMBOL TABLE ==========\n";
-    cout << left << setw(15) << "Name"
-         << setw(15) << "Type"
-         << setw(8) << "Scope"
-         << setw(10) << "Offset" << endl;
-    cout << "---------------------------------------------------\n";
+    cout << "\n=========================== SYMBOL TABLE ===========================\n";
+    cout << "Scope " << Scopelevel;
+    if (!FunctionName.empty())
+        cout << " - Function: " << FunctionName;
+    cout << "\n";
+    cout << "======================================================================\n";
+    cout << left << setw(18) << "Name"
+         << setw(20) << "Type"
+         << setw(10) << "Scope ID"
+         << setw(10) << "Offset"
+         << setw(10) << "Static" << endl;
+    cout << "================================================\n";
 
     for (const auto &pair : table)
     {
         for (const Symbol *sym : pair.second)
         {
-            cout << left << setw(15) << sym->name
-                 << setw(15) << sym->type.to_string()
-                 << setw(8) << sym->scope
-                 << setw(10) << sym->offset << endl;
+            cout << left << setw(18) << sym->name
+                 << setw(20) << sym->type.to_string()
+                 << setw(10) << sym->scope
+                 << setw(10) << sym->offset
+                 << setw(10) << (sym->is_static ? "Yes" : "No") << endl;
         }
     }
 
-    cout << "==================================\n"
+    cout << "================================================\n"
          << endl;
 }
 
@@ -1656,7 +1942,7 @@ void register_builtin_io_functions()
     register_function("print_int", print_int_params, Type(TYPE_VOID));
 
     // print_double(double)
-    vector<Type> print_double_params = {Type(TYPE_FLOAT)};
+    vector<Type> print_double_params = {Type(TYPE_DOUBLE)};
     register_function("print_double", print_double_params, Type(TYPE_VOID));
 
     // print_char(char)
@@ -1679,7 +1965,7 @@ void register_builtin_io_functions()
 
     // scan_double() -> double
     vector<Type> scan_double_params = {};
-    register_function("scan_double", scan_double_params, Type(TYPE_FLOAT));
+    register_function("scan_double", scan_double_params, Type(TYPE_DOUBLE));
 
     // scan_char() -> char
     vector<Type> scan_char_params = {};
@@ -1722,7 +2008,7 @@ bool is_bool_compatible(const Type &type)
     {
     case TYPE_INT:
     case TYPE_CHAR:
-    case TYPE_FLOAT:
+    case TYPE_DOUBLE:
     case TYPE_BOOL:
     case TYPE_ENUM:
         return true;

@@ -1436,8 +1436,10 @@ void SwitchStatement::generate_tac()
 
     if (CompoundStatement *compound = dynamic_cast<CompoundStatement *>(body))
     {
-        for (Statement *stmt : compound->statements)
+        for (size_t i = 0; i < compound->statements.size(); i++)
         {
+            Statement *stmt = compound->statements[i];
+
             // Mark position before generating this statement
             int stmt_start = tacGen.nextinstr();
 
@@ -1455,6 +1457,11 @@ void SwitchStatement::generate_tac()
             // Generate code for this statement
             stmt->generate_tac();
             code.insert(code.end(), stmt->code.begin(), stmt->code.end());
+
+            // Backpatch this statement's nextlist to the next statement
+            // (or will be backpatched to exit later if this is the last statement)
+            int next_target = tacGen.nextinstr();
+            backpatch(stmt->nextlist, next_target);
 
             // Accumulate break statements from this statement
             accumulated_breaklist.insert(accumulated_breaklist.end(),
@@ -1873,13 +1880,9 @@ string LabelStatement::to_string() const
 
 void LabelStatement::generate_tac()
 {
-    // Emit a label instruction at the current position
-    int label_instr = tacGen.emit(TAC_LABEL, TACOperand(TACOperand::OPERAND_LABEL, label_name), TACOperand());
-    code.push_back(tacGen.getCode().back());
-
-    // Register the label -> gotos should jump to the NEXT instruction after the label
-    // So we register the next instruction position (label_instr + 1)
-    tacGen.emit_label(label_name, label_instr);
+    // Register the label at the current position without emitting a TAC instruction
+    // This allows gotos to jump to the next instruction that will be emitted
+    tacGen.register_label_at_current_position(label_name);
 
     // Generate code for the statement following the label
     if (statement)
@@ -1895,7 +1898,7 @@ void LabelStatement::generate_tac()
     }
 
     if (debug)
-        printf("[AST] LabelStatement: Generated label '%s' at line %d\n", label_name.c_str(), label_instr);
+        printf("[AST] LabelStatement: Registered label '%s' at current position\n", label_name.c_str());
 }
 
 // ============================================================================
@@ -1933,7 +1936,8 @@ static void emit_destructor_for_symbol(Symbol *sym, std::vector<TACInstruction *
     const std::string &class_name = sym->type.class_name;
     // Check if destructor exists: ~ClassName with no parameters
     std::vector<Type> no_params;
-    MethodSignature *dtor = find_method_match(class_name, "~" + class_name, no_params);
+    // For destructor calls, use find_method_call_match to allow implicit conversions
+    MethodSignature *dtor = find_method_call_match(class_name, "~" + class_name, no_params);
     if (!dtor)
     {
         // No user-declared destructor; skip silently
